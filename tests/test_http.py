@@ -56,6 +56,8 @@ async def test_the_sign_in_page_carries_redirect_and_state(client: httpx.AsyncCl
     csp = response.headers["content-security-policy"]
     assert "form-action 'self' https://test.vetfab.ai" in csp
     assert "frame-ancestors 'none'" in csp
+    # `no-referrer` would make browsers send `Origin: null` on the form post, failing the same-origin check.
+    assert response.headers["referrer-policy"] == "strict-origin-when-cross-origin"
 
 
 async def test_password_sign_in_hands_off_a_verified_token(

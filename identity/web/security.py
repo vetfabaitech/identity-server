@@ -50,7 +50,9 @@ def security_headers(settings: Settings) -> dict[str, str]:
         "Content-Security-Policy": csp,
         "X-Content-Type-Options": "nosniff",
         "X-Frame-Options": "DENY",
-        "Referrer-Policy": "no-referrer",
+        # Not `no-referrer`: under that policy browsers send `Origin: null` on the service's own form posts,
+        # which the same-origin check above would refuse.
+        "Referrer-Policy": "strict-origin-when-cross-origin",
         "Cross-Origin-Opener-Policy": "same-origin",
         "Cache-Control": "no-store",
     }
