@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block body %}
+{% if accounts is none %}
+<p class="lede">Test accounts are for trying the platform in every role. Enter the passphrase you were given.</p>
+<form method="post" action="/auth/test-accounts" class="stack">
+  <input type="hidden" name="redirect" value="{{ redirect }}">
+  <input type="hidden" name="state" value="{{ state }}">
+  <label for="passphrase">Passphrase</label>
+  <input id="passphrase" name="passphrase" type="password" autocomplete="off" required autofocus>
+  <button type="submit">Continue</button>
+</form>
+{% elif accounts %}
+<p class="lede">Choose who to sign in as. Each account sees what its role allows.</p>
+<ul class="accounts">
+  {% for account in accounts %}
+  <li>
+    <form method="post" action="/auth/test-accounts/signin">
+      <input type="hidden" name="user_id" value="{{ account.id }}">
+      <input type="hidden" name="redirect" value="{{ redirect }}">
+      <input type="hidden" name="state" value="{{ state }}">
+      <button type="submit" class="account">
+        <span class="name">{{ account.display_name }}</span>
+        <span class="email">{{ account.email }}</span>
+        {% if account.status != "approved" %}<span class="status">{{ account.status }}</span>{% endif %}
+      </button>
+    </form>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="lede">None of the configured test accounts exist yet. Run the seed script on the server.</p>
+{% endif %}
+<p class="aside"><a href="{{ login_url }}">Sign in with email and password</a></p>
+{% endblock %}

@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block body %}
+<form method="post" action="/auth/login" class="stack">
+  <input type="hidden" name="redirect" value="{{ redirect }}">
+  <input type="hidden" name="state" value="{{ state }}">
+  <label for="email">Email</label>
+  <input id="email" name="email" type="email" autocomplete="username" required value="{{ email }}" {% if not email %}autofocus{% endif %}>
+  <label for="password">Password</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" required {% if email %}autofocus{% endif %}>
+  <button type="submit">Sign in</button>
+</form>
+{% if test_accounts %}
+<p class="aside"><a href="{{ picker_url }}">Use a test account</a></p>
+{% endif %}
+{% endblock %}

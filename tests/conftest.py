@@ -18,6 +18,7 @@ import pytest
 from psycopg import sql
 
 if TYPE_CHECKING:
+    import httpx
     from psycopg_pool import AsyncConnectionPool
 
     from identity.config import Settings
@@ -183,10 +184,41 @@ def make_user(owner_url: str) -> "Callable[..., User]":
         with psycopg.connect(owner_url, autocommit=True) as conn:
             row = conn.execute(
                 """INSERT INTO public.users (email, display_name, status, password_hash)
-                   VALUES (%s, %s, %s, %s) RETURNING id""",
+                   VALUES (%s, %s, %s, %s)
+                   ON CONFLICT (email) DO UPDATE SET display_name = EXCLUDED.display_name,
+                     status = EXCLUDED.status, password_hash = EXCLUDED.password_hash
+                   RETURNING id""",
                 (address, name, status, hashed),
             ).fetchone()
         assert row is not None
         return User(id=row[0], email=address, display_name=name, status=status, password_hash=hashed)
 
     return make
+
+
+# --------------------------------------------------------------------------- HTTP fixtures
+
+ORIGIN = "https://test.vetfab.ai"
+SAME_ORIGIN = {"origin": ORIGIN, "sec-fetch-site": "same-origin"}
+PASSWORD = "correct horse battery"  # noqa: S105  # test fixture
+
+
+@pytest.fixture
+def clear_attempts(owner_url: str) -> None:
+    """Rate-limit counters are keyed by client address, which every in-process test shares."""
+    with psycopg.connect(owner_url, autocommit=True) as conn:
+        conn.execute("DELETE FROM identity.signin_attempts")
+
+
+def client_for(app: object) -> "httpx.AsyncClient":
+    import httpx
+
+    transport = httpx.ASGITransport(app=app)  # pyright: ignore[reportArgumentType]
+    return httpx.AsyncClient(transport=transport, base_url=ORIGIN, follow_redirects=False)
+
+
+def build_app(settings: "Settings", pool: "AsyncConnectionPool", keys_dir: Path) -> object:
+    from identity.keys import KeyRing
+    from identity.web.app import create_app
+
+    return create_app(settings, pool=pool, keys=KeyRing.load(keys_dir))

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>{{ title }} · Vetfab</title>
+  <link rel="stylesheet" href="/auth/static/identity.css">
+</head>
+<body>
+  <main class="card">
+    <p class="brand">Vetfab</p>
+    <h1>{{ title }}</h1>
+    {% if message %}<p class="message" role="alert">{{ message }}</p>{% endif %}
+    {% block body %}{% endblock %}
+  </main>
+</body>
+</html>
