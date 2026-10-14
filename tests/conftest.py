@@ -9,12 +9,19 @@
 
 import os
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import psycopg
 import pytest
 from psycopg import sql
+
+if TYPE_CHECKING:
+    from psycopg_pool import AsyncConnectionPool
+
+    from identity.config import Settings
+    from identity.store import User
 
 IDENTITY_DIR = Path(__file__).resolve().parent.parent
 REPO_DIR = IDENTITY_DIR.parent.parent
@@ -117,3 +124,69 @@ def login_url(database: str) -> str:
 async def owner(owner_url: str) -> AsyncIterator[psycopg.AsyncConnection]:
     async with await psycopg.AsyncConnection.connect(owner_url, autocommit=True) as conn:
         yield conn
+
+
+# --------------------------------------------------------------------------- service-level fixtures
+
+
+@pytest.fixture(scope="session")
+def keys_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    from identity.keys import generate_key
+
+    directory = tmp_path_factory.mktemp("identity-keys")
+    generate_key(directory)
+    return directory
+
+
+def make_settings(login_url: str, keys_dir: Path, **overrides: object) -> "Settings":
+    from identity.config import Settings
+
+    values: dict[str, object] = {
+        "environment": "staging",
+        "database_url": login_url,
+        "issuer": "https://test.vetfab.ai/auth",
+        "audience": "vetfab-lms",
+        "app_origin": "https://test.vetfab.ai",
+        "keys_dir": keys_dir,
+        **overrides,
+    }
+    return Settings(_env_file=None, **values)  # pyright: ignore[reportCallIssue, reportArgumentType]
+
+
+@pytest.fixture(scope="session")
+def settings(login_url: str, keys_dir: Path) -> "Settings":
+    return make_settings(login_url, keys_dir)
+
+
+@pytest.fixture(scope="session")
+async def pool(login_url: str) -> AsyncIterator["AsyncConnectionPool"]:
+    from identity.db import open_pool
+
+    opened = await open_pool(login_url)
+    try:
+        yield opened
+    finally:
+        await opened.close()
+
+
+@pytest.fixture
+def make_user(owner_url: str) -> "Callable[..., User]":
+    """Inserts an account as the owner would (operator action), optionally with a password."""
+    from identity.passwords import hash_password
+    from identity.store import User
+
+    def make(
+        email: str | None = None, *, status: str = "approved", password: str | None = None, name: str = "Test User"
+    ) -> User:
+        address = email or f"{uuid.uuid4().hex[:12]}@test.vetfab"
+        hashed = hash_password(password) if password else None
+        with psycopg.connect(owner_url, autocommit=True) as conn:
+            row = conn.execute(
+                """INSERT INTO public.users (email, display_name, status, password_hash)
+                   VALUES (%s, %s, %s, %s) RETURNING id""",
+                (address, name, status, hashed),
+            ).fetchone()
+        assert row is not None
+        return User(id=row[0], email=address, display_name=name, status=status, password_hash=hashed)
+
+    return make
