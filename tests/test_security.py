@@ -32,8 +32,14 @@ def request(headers: dict[str, str]) -> Request:
 
 
 @pytest.mark.parametrize("environment", ["development", "staging"])
-def test_a_sibling_product_origin_may_post_same_site(environment: str) -> None:
-    assert same_origin(request({"origin": IDE, "sec-fetch-site": "same-site"}), settings(environment))
+def test_a_sibling_product_origin_may_post_same_site_where_allowed(environment: str) -> None:
+    headers = {"origin": IDE, "sec-fetch-site": "same-site"}
+    assert same_origin(request(headers), settings(environment), allow_siblings=True)
+
+
+def test_a_sibling_product_origin_may_not_post_sign_in_forms() -> None:
+    assert not same_origin(request({"origin": IDE, "sec-fetch-site": "same-site"}), settings())
+    assert not same_origin(request({"origin": IDE}), settings())
 
 
 def test_the_identity_origin_itself_must_be_same_origin_when_deployed() -> None:

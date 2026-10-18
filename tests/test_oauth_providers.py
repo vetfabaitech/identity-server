@@ -191,3 +191,11 @@ def test_configured_providers_requires_id_and_secret() -> None:
 def test_secrets_never_appear_in_the_authorize_url() -> None:
     for name in ("github", "google"):
         assert "secret" not in PROVIDERS[name].authorize_url(settings(), "n")
+
+
+async def test_the_provider_error_code_is_kept_for_the_log() -> None:
+    async with client({GH_TOKEN: (200, {"error": "redirect_uri_mismatch", "error_description": "bad"})}) as c:
+        with pytest.raises(OAuthError) as caught:
+            await PROVIDERS["github"].fetch_profile(settings(), "code", c)
+    assert "redirect_uri_mismatch" in str(caught.value)
+    assert "gh-secret" not in str(caught.value)

@@ -68,10 +68,11 @@ class GitHub:
                 "redirect_uri": settings.oauth_redirect_uri(self.name),
             },
         )
-        body = token_response.json() if token_response.status_code == 200 else {}
-        token = body.get("access_token") if isinstance(body, dict) else None
+        body = token_response.json() if token_response.content else {}
+        token = body.get("access_token") if isinstance(body, dict) and token_response.status_code == 200 else None
         if not token:
-            raise OAuthError("provider", f"token exchange failed ({token_response.status_code})")
+            code = str(body.get("error", ""))[:64] if isinstance(body, dict) else ""
+            raise OAuthError("provider", f"token exchange failed ({token_response.status_code} {code})".rstrip())
         headers = {**API_HEADERS, "Authorization": f"Bearer {token}"}
         user_response = await http.get(USER_URL, headers=headers)
         if user_response.status_code != 200:

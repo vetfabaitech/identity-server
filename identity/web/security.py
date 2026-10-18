@@ -1,9 +1,8 @@
 """Browser-facing protections: same-origin checks for state-changing posts, security headers, a body-size limit.
 
-`same_origin` ports apps/web/src/lib/auth/origin.ts: `Origin` must be present and equal one of this deployment's
-origins (the identity service's own, from the issuer, and every IDENTITY_APP_ORIGINS entry, from which sign-out
-arrives). `Sec-Fetch-Site`, when present, must be `same-origin` for the service's own origin once deployed; a sibling
-product origin (the IDE on demo.vetfab.ai) is `same-site` by construction and accepted as such (spec SI-3, §4).
+`same_origin` ports apps/web/src/lib/auth/origin.ts: `Origin` must be present and be the identity service's own
+origin or the default app origin, with `Sec-Fetch-Site: same-origin` once deployed. Sign-out alone also accepts the
+other IDENTITY_APP_ORIGINS (the IDE on demo.vetfab.ai), which are `same-site` by construction (spec SI-3, §4).
 """
 
 from collections.abc import Awaitable, Callable, MutableMapping
@@ -30,17 +29,24 @@ def origin_of(url: str) -> str | None:
     return f"{parts.scheme}://{parts.netloc}"
 
 
-def same_origin(request: Request, settings: Settings) -> bool:
+def same_origin(request: Request, settings: Settings, *, allow_siblings: bool = False) -> bool:
+    """Whether a state-changing POST comes from this deployment's own pages.
+
+    The service's own origin and the default app origin (the LMS, the same origin once deployed) are accepted as
+    before. `allow_siblings` also accepts the other IDENTITY_APP_ORIGINS, which post same-site by construction; only
+    sign-out uses it. Sign-in forms never do: a sibling product may receive tokens for its user, but must not choose
+    which account the shared session belongs to (login CSRF).
+    """
     origin = request.headers.get("origin")
     if not origin or origin == "null":
         return False
     sender = origin_of(origin)
-    own = origin_of(settings.issuer)
-    if sender not in {*settings.app_origin_list, own}:
+    if sender in {settings.app_origin, origin_of(settings.issuer)}:
+        allowed_sites = {"same-origin"} if settings.deployed else {"same-origin", "same-site"}
+    elif allow_siblings and sender in settings.app_origin_list:
+        allowed_sites = {"same-origin", "same-site"}
+    else:
         return False
-    # A product on a sibling host (the IDE posting its sign-out) is same-site by construction; a post claiming to come
-    # from this service's own origin must be same-origin once deployed.
-    allowed_sites = {"same-origin", "same-site"} if (sender != own or not settings.deployed) else {"same-origin"}
     fetch_site = request.headers.get("sec-fetch-site")
     return fetch_site is None or fetch_site in allowed_sites
 

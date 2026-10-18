@@ -57,10 +57,11 @@ class Google:
                 "grant_type": "authorization_code",
             },
         )
-        body = token_response.json() if token_response.status_code == 200 else {}
-        token = body.get("access_token") if isinstance(body, dict) else None
+        body = token_response.json() if token_response.content else {}
+        token = body.get("access_token") if isinstance(body, dict) and token_response.status_code == 200 else None
         if not token:
-            raise OAuthError("provider", f"token exchange failed ({token_response.status_code})")
+            code = str(body.get("error", ""))[:64] if isinstance(body, dict) else ""
+            raise OAuthError("provider", f"token exchange failed ({token_response.status_code} {code})".rstrip())
         info_response = await http.get(USERINFO_URL, headers={"Authorization": f"Bearer {token}"})
         if info_response.status_code != 200:
             raise OAuthError("provider", f"userinfo failed ({info_response.status_code})")

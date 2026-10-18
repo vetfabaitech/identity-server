@@ -7,6 +7,7 @@ forged callback from signing a victim into an attacker's account. Only then is t
 """
 
 import hmac
+import logging
 import secrets
 
 from fastapi import APIRouter, Request
@@ -20,6 +21,7 @@ from identity.web import cookies
 from identity.web.routes import INACTIVE, _client, _handoff, _login_page, _pool, _settings
 
 router = APIRouter(prefix="/auth/oauth")
+log = logging.getLogger("identity.oauth")
 
 OAUTH_STATE_MESSAGE = "This sign-in link has expired. Please try again."
 OAUTH_DENIED = "Sign-in with {provider} was cancelled."
@@ -48,6 +50,13 @@ async def oauth_start(request: Request, name: str, redirect: str | None = None, 
     return response
 
 
+async def _audit_failure(request: Request, provider: str, reason: str, ip: str, agent: str | None) -> None:
+    async with _pool(request).connection() as conn:
+        await store.audit(
+            conn, "signin_failed", ip=ip, user_agent=agent, metadata={"reason": reason, "provider": provider}
+        )
+
+
 def _fail(request: Request, target: Target, state: str | None, status: int, message: str) -> Response:
     page = _login_page(request, target, state, status, message)
     cookies.clear_cookie(page, cookies.OAUTH_STATE, _settings(request))
@@ -66,19 +75,29 @@ async def oauth_callback(
     target = post_signin_target(remembered.redirect if remembered else None, settings)
     nonce = valid_state(remembered.state) if remembered else None
     if remembered is None or not state or not hmac.compare_digest(state.encode(), remembered.nonce.encode()):
+        log.warning(
+            "oauth %s callback refused: state %s", provider.name, "cookie missing" if remembered is None else "mismatch"
+        )
         return _fail(request, target, nonce, 400, OAUTH_STATE_MESSAGE)
     if error or not code:
         return _fail(request, target, nonce, 400, OAUTH_DENIED.format(provider=provider.label))
+    ip, agent = _client(request)
     try:
         profile = await provider.fetch_profile(settings, code)
-    except OAuthError:
+    except OAuthError as exc:
+        log.warning("oauth %s sign-in failed: %s", provider.name, exc)
+        await _audit_failure(request, provider.name, "oauth_provider", ip, agent)
         return _fail(request, target, nonce, 502, OAUTH_FAILED.format(provider=provider.label))
 
-    ip, agent = _client(request)
     async with _pool(request).connection() as conn:
         try:
             resolved = await resolve_user(conn, profile, settings)
-        except OAuthError:
+        except OAuthError as exc:
+            log.warning("oauth %s sign-in refused: %s", provider.name, exc)
+            await store.audit(
+                conn, "signin_failed", ip=ip, user_agent=agent,
+                metadata={"reason": exc.reason, "provider": provider.name},
+            )  # fmt: skip
             return _fail(request, target, nonce, 400, NO_VERIFIED_EMAIL.format(provider=provider.label))
         user = resolved.user
         if not user.active:

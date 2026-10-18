@@ -143,3 +143,16 @@ async def test_duplicate_email_insert_recovers(
         resolved = await resolve_user(conn, profile("race@dev.vetfab.local"), settings)
     assert resolved.outcome == "linked"
     assert resolved.user.id == existing.id
+
+
+@pytest.mark.parametrize("status", ["suspended", "rejected"])
+async def test_a_blocked_admin_email_is_not_resurrected(
+    pool: AsyncConnectionPool, login_url: str, keys_dir: Path, make_user: Callable[..., User], status: str
+) -> None:
+    email = f"blocked-{status}-admin@dev.vetfab.local"
+    make_user(email, status=status)
+    listed = make_settings(login_url, keys_dir, admin_emails=email)
+    async with pool.connection() as conn:
+        resolved = await resolve_user(conn, profile(email, pid=f"blocked-{status}"), listed)
+    assert resolved.user.status == status
+    assert resolved.user.role == "beta_user"

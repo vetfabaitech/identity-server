@@ -172,9 +172,10 @@ async def login(request: Request) -> Response:
 
 @router.post("/logout")
 async def logout(request: Request, redirect: str | None = None) -> Response:
-    """Reached by the web app's POST /bff/signout through a 307, so it is a same-origin POST; never a GET."""
+    """Reached by the LMS web app's POST /bff/signout through a 307 (same-origin) or by a sibling product's form post
+    (same-site, spec §4), so it is a POST, never a GET. `redirect` may be an absolute URL on an allowlisted origin."""
     settings = _settings(request)
-    if not same_origin(request, settings):
+    if not same_origin(request, settings, allow_siblings=True):
         return _refused(request)
     raw = request.cookies.get(cookies.cookie_name(cookies.REFRESH, settings))
     if raw:

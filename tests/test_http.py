@@ -341,3 +341,17 @@ async def test_renewal_preflight(two_origin_client: httpx.AsyncClient) -> None:
     refused = await two_origin_client.options("/auth/session/token", headers={"origin": "https://evil.example"})
     assert refused.status_code == 403
     assert "access-control-allow-origin" not in refused.headers
+
+
+async def test_the_ide_cannot_post_the_sign_in_form(
+    two_origin_client: httpx.AsyncClient, make_user: Callable[..., User]
+) -> None:
+    """Only sign-out is open to a sibling product; choosing the signed-in account is not (login CSRF)."""
+    user = make_user(password=PASSWORD)
+    response = await two_origin_client.post(
+        "/auth/login",
+        data={"email": user.email, "password": PASSWORD, "redirect": "/"},
+        headers={"origin": IDE, "sec-fetch-site": "same-site"},
+    )
+    assert response.status_code == 403
+    assert "set-cookie" not in response.headers

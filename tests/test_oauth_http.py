@@ -214,3 +214,41 @@ async def test_login_page_shows_configured_providers_only(client: httpx.AsyncCli
     assert "Continue with Google" not in response.text
     assert 'href="/auth/oauth/github/start?redirect=https%3A%2F%2Fdemo.vetfab.ai%2Fx&amp;state=s9"' in response.text
     assert "LMS" not in response.text and "IDE" not in response.text, "the sign-in page names no product"
+
+
+def oauth_failures(owner_url: str) -> list[tuple[str | None, str | None]]:
+    with psycopg.connect(owner_url) as conn:
+        rows = conn.execute(
+            """SELECT metadata->>'reason', metadata->>'provider' FROM identity.audit
+                WHERE action = 'signin_failed' AND metadata ? 'provider' ORDER BY id"""
+        ).fetchall()
+    return [(r[0], r[1]) for r in rows]
+
+
+async def test_provider_failure_is_logged_and_audited(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch, owner_url: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake_github(monkeypatch, OAuthError("provider", "token exchange failed: redirect_uri_mismatch"))
+    before = oauth_failures(owner_url)
+    nonce = await start(client)
+    with caplog.at_level("WARNING", logger="identity.oauth"):
+        await client.get("/auth/oauth/github/callback", params={"code": "c", "state": nonce})
+    assert any("redirect_uri_mismatch" in r.getMessage() for r in caplog.records)
+    assert oauth_failures(owner_url)[len(before) :] == [("oauth_provider", "github")]
+
+
+async def test_no_verified_email_is_audited(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch, owner_url: str
+) -> None:
+    fake_github(monkeypatch, github_profile("audit-unverified@dev.vetfab.local", pid="gh-au", verified=False))
+    before = oauth_failures(owner_url)
+    nonce = await start(client)
+    await client.get("/auth/oauth/github/callback", params={"code": "c", "state": nonce})
+    assert oauth_failures(owner_url)[len(before) :] == [("no_verified_email", "github")]
+
+
+async def test_state_mismatch_is_logged(client: httpx.AsyncClient, caplog: pytest.LogCaptureFixture) -> None:
+    await start(client)
+    with caplog.at_level("WARNING", logger="identity.oauth"):
+        await client.get("/auth/oauth/github/callback", params={"code": "c", "state": "forged"})
+    assert any("state" in r.getMessage() for r in caplog.records)

@@ -4,7 +4,8 @@
 2. Otherwise only a provider-verified email is trusted: an account with that email is linked; with none, a new
    `pending` account is created and linked. An unverified or missing email neither links nor creates (an attacker
    could otherwise pre-claim someone else's address and receive their later verified sign-in).
-3. An account whose email is in IDENTITY_ADMIN_EMAILS becomes an approved administrator (the IDE's bootstrap).
+3. An active (pending or approved) account whose email is in IDENTITY_ADMIN_EMAILS becomes an approved
+   administrator (the IDE's bootstrap). A suspended or rejected one stays as it is.
 
 A first sign-in racing another for the same email or provider id recovers by re-reading instead of failing.
 """
@@ -61,9 +62,11 @@ async def _resolve(conn: AsyncConnection[Any], profile: Profile) -> Resolved:
 async def resolve_user(conn: AsyncConnection[Any], profile: Profile, settings: Settings) -> Resolved:
     resolved = await _resolve(conn, profile)
     user = resolved.user
-    if store.normalise_email(user.email) in settings.admin_email_list and (user.role, user.status) != (
-        "admin",
-        "approved",
+    # Only an active account is promoted: an operator's suspension or rejection is never undone by signing in.
+    if (
+        user.active
+        and store.normalise_email(user.email) in settings.admin_email_list
+        and (user.role, user.status) != ("admin", "approved")
     ):
         await store.promote_admin(conn, user.id)
         await store.audit(conn, "admin_bootstrapped", user_id=user.id, metadata={"previous": [user.role, user.status]})
