@@ -22,7 +22,7 @@ Sessions: the refresh token lives in an HttpOnly cookie on `Path=/auth`, is stor
 | `ENVIRONMENT` | Required: `development`, `test`, `staging`, `production` |
 | `DATABASE_URL` | The service login: NOINHERIT, member of `identity_app` only. Migrations use the owner URL in the same variable |
 | `ISSUER`, `AUDIENCE` | Stamped on tokens; the API's `LMS_TOKEN_ISSUER` and `LMS_TOKEN_AUDIENCE` must match. https outside development |
-| `APP_ORIGIN` | The web app's origin (where `/handoff` lives). https outside development |
+| `APP_ORIGINS` | Comma-separated origins whose `/handoff` may receive a token; the first is the default for path-only redirects. https outside development |
 | `KEYS_DIR` | One `<kid>.pem` per key; the newest signs, all are published |
 | `ACCESS_TOKEN_SECONDS` | 900 (at most 900) |
 | `REFRESH_TOKEN_DAYS`, `REFRESH_GRACE_SECONDS` | 30 days, 30 seconds |

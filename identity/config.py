@@ -30,8 +30,9 @@ class Settings(BaseSettings):
     issuer: str = Field(min_length=1)
     # `aud` stamped on access tokens. The API's LMS_TOKEN_AUDIENCE must match.
     audience: str = Field(min_length=1)
-    # Origin of the LMS web app, whose /handoff receives the token (scheme + host + port).
-    app_origin: str = Field(min_length=1)
+    # Comma-separated origins (scheme + host + port) whose /handoff may receive a token (spec SI-3, SI-4). The first
+    # is the default: a path-only `redirect` lands there. The LMS web app comes first; the IDE follows.
+    app_origins: str = Field(min_length=1)
 
     # Directory of RSA private keys, one `<kid>.pem` each; the newest signs, all are published (keys.py).
     keys_dir: Path
@@ -57,21 +58,41 @@ class Settings(BaseSettings):
     # Password `identity-admin seed-test-accounts` sets on those accounts.
     test_accounts_password: SecretStr | None = None
 
-    @field_validator("app_origin")
+    # OAuth clients (spec SI-5). A provider is offered only when both its id and secret are set. The callback each
+    # must register is `oauth_redirect_uri(provider)`.
+    github_client_id: str = ""
+    github_client_secret: SecretStr | None = None
+    google_client_id: str = ""
+    google_client_secret: SecretStr | None = None
+
+    # Comma-separated emails that become approved administrators on OAuth sign-in (the IDE's BETA_ADMIN_EMAILS
+    # bootstrap, spec SI-5/SI-7).
+    admin_emails: str = ""
+
+    @field_validator("app_origins")
     @classmethod
-    def _origin_only(cls, value: str) -> str:
-        parts = urlsplit(value.strip())
-        if parts.scheme not in ("http", "https") or not parts.netloc:
-            raise ValueError("IDENTITY_APP_ORIGIN must be an http(s) origin.")
-        return f"{parts.scheme}://{parts.netloc}"
+    def _origins_only(cls, value: str) -> str:
+        origins: list[str] = []
+        for raw in value.split(","):
+            if not raw.strip():
+                continue
+            parts = urlsplit(raw.strip())
+            if parts.scheme not in ("http", "https") or not parts.netloc:
+                raise ValueError("IDENTITY_APP_ORIGINS must list http(s) origins.")
+            origin = f"{parts.scheme}://{parts.netloc}"
+            if origin not in origins:
+                origins.append(origin)
+        if not origins:
+            raise ValueError("IDENTITY_APP_ORIGINS must list at least one origin.")
+        return ",".join(origins)
 
     @model_validator(mode="after")
     def _fail_closed(self) -> "Settings":
         if self.deployed:
             if not self.issuer.startswith("https://"):
                 raise ValueError("IDENTITY_ISSUER must use https outside development/test.")
-            if not self.app_origin.startswith("https://"):
-                raise ValueError("IDENTITY_APP_ORIGIN must use https outside development/test.")
+            if any(not origin.startswith("https://") for origin in self.app_origin_list):
+                raise ValueError("IDENTITY_APP_ORIGINS must use https outside development/test.")
         if self.test_accounts:
             if self.environment == "production":
                 raise ValueError("IDENTITY_TEST_ACCOUNTS is refused in production.")
@@ -85,6 +106,22 @@ class Settings(BaseSettings):
         return self
 
     @property
+    def app_origin_list(self) -> list[str]:
+        return self.app_origins.split(",")
+
+    @property
+    def app_origin(self) -> str:
+        """The default hand-off origin: the first of IDENTITY_APP_ORIGINS."""
+        return self.app_origin_list[0]
+
+    @property
+    def admin_email_list(self) -> list[str]:
+        return _email_list(self.admin_emails)
+
+    def oauth_redirect_uri(self, provider: str) -> str:
+        return f"{self.issuer.rstrip('/')}/oauth/{provider}/callback"
+
+    @property
     def deployed(self) -> bool:
         return self.environment in ("staging", "production")
 
@@ -95,12 +132,16 @@ class Settings(BaseSettings):
 
     @property
     def test_account_emails(self) -> list[str]:
-        seen: list[str] = []
-        for raw in self.test_accounts_emails.split(","):
-            email = raw.strip().lower()
-            if email and email not in seen:
-                seen.append(email)
-        return seen
+        return _email_list(self.test_accounts_emails)
+
+
+def _email_list(value: str) -> list[str]:
+    seen: list[str] = []
+    for raw in value.split(","):
+        email = raw.strip().lower()
+        if email and email not in seen:
+            seen.append(email)
+    return seen
 
 
 @lru_cache

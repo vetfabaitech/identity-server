@@ -25,7 +25,7 @@ def settings_for(keys_dir: Path) -> Settings:
         database_url="postgresql://unused",
         issuer=ISSUER,
         audience=AUDIENCE,
-        app_origin="https://test.vetfab.ai",
+        app_origins="https://test.vetfab.ai",
         keys_dir=keys_dir,
     )
 
