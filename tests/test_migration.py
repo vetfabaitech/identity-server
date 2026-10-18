@@ -152,7 +152,47 @@ def test_every_identity_table_has_row_level_security(database: str) -> None:
                 WHERE c.relkind = 'r' AND ((n.nspname = 'identity' AND c.relname <> 'alembic_version')
                                            OR (n.nspname = 'public' AND c.relname = 'users'))"""
         ).fetchall()
-    assert {r[0] for r in rows} == {"refresh_tokens", "signin_attempts", "audit", "users"}
+    assert {r[0] for r in rows} == {"refresh_tokens", "signin_attempts", "audit", "oauth_accounts", "users"}
     for name, rls, policies in rows:
         assert rls, f"{name} has RLS disabled"
         assert policies >= 1, f"{name} has no policy"
+
+
+def test_0002_creates_oauth_accounts_for_the_service(database: str) -> None:
+    with _as_login(database) as conn:
+        conn.execute("SET ROLE identity_app")
+        row = conn.execute(
+            "INSERT INTO public.users (email, display_name) VALUES ('oauth@x.test', 'O') RETURNING id"
+        ).fetchone()
+        assert row is not None
+        conn.execute(
+            "INSERT INTO identity.oauth_accounts (provider, provider_user_id, user_id, email_at_link) "
+            "VALUES ('github', '42', %s, 'oauth@x.test')",
+            (row[0],),
+        )
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            conn.execute(
+                "INSERT INTO identity.oauth_accounts (provider, provider_user_id, user_id) VALUES ('github', '42', %s)",
+                (row[0],),
+            )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "INSERT INTO identity.oauth_accounts (provider, provider_user_id, user_id) VALUES ('gitlab', '1', %s)",
+                (row[0],),
+            )
+        for action in ("oauth_signin", "oauth_linked", "admin_bootstrapped"):
+            conn.execute("INSERT INTO identity.audit (action) VALUES (%s)", (action,))
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("UPDATE identity.oauth_accounts SET user_id = user_id")
+
+
+def test_downgrade_to_0001_removes_oauth_accounts(scratch: str) -> None:
+    url = db_url(scratch)
+    alembic(url, "upgrade", "head")
+    assert "oauth_accounts" in tables(url)
+    alembic(url, "downgrade", "0001")
+    assert "oauth_accounts" not in tables(url)
+    with psycopg.connect(url, autocommit=True) as conn, pytest.raises(psycopg.errors.CheckViolation):
+        conn.execute("INSERT INTO identity.audit (action) VALUES ('oauth_signin')")
+    alembic(url, "upgrade", "head")
+    assert "oauth_accounts" in tables(url)

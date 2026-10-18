@@ -93,3 +93,31 @@ async def test_status_and_password_updates(
     with psycopg.connect(owner_url) as owner:
         last = owner.execute("SELECT last_login_at IS NOT NULL FROM public.users WHERE id = %s", (user.id,)).fetchone()
     assert last == (True,)
+
+
+async def test_link_and_find_by_oauth(pool: AsyncConnectionPool, make_user: Callable[..., User]) -> None:
+    user = make_user()
+    async with pool.connection() as conn:
+        await store.link_oauth(conn, user.id, "github", "1001", user.email)
+        found = await store.find_user_by_oauth(conn, "github", "1001")
+        other_provider = await store.find_user_by_oauth(conn, "google", "1001")
+        unknown = await store.find_user_by_oauth(conn, "github", "9999")
+    assert found is not None and found.id == user.id and found.role == "beta_user"
+    assert other_provider is None and unknown is None
+
+
+async def test_create_user_with_role(pool: AsyncConnectionPool) -> None:
+    async with pool.connection() as conn:
+        user = await store.create_user(conn, "role-admin@dev.vetfab.local", "Ada", "approved", role="admin")
+        default = await store.create_user(conn, "role-default@dev.vetfab.local", "Bea", "pending")
+    assert user.role == "admin"
+    assert default.role == "beta_user"
+
+
+async def test_promote_admin_sets_role_and_status(pool: AsyncConnectionPool, make_user: Callable[..., User]) -> None:
+    user = make_user(status="pending")
+    async with pool.connection() as conn:
+        await store.promote_admin(conn, user.id)
+        promoted = await store.get_user(conn, user.id)
+    assert promoted is not None
+    assert (promoted.role, promoted.status) == ("admin", "approved")

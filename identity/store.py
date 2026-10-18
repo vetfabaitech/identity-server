@@ -24,9 +24,13 @@ AuditAction = Literal[
     "status_change",
     "password_set",
     "user_created",
+    "oauth_signin",
+    "oauth_linked",
+    "admin_bootstrapped",
 ]
+Provider = Literal["github", "google"]
 
-_USER_COLUMNS = "id, email, display_name, status, password_hash"
+_USER_COLUMNS = "id, email, display_name, status, password_hash, role"
 MAX_USER_AGENT = 512
 MAX_IP = 64
 
@@ -38,6 +42,7 @@ class User:
     display_name: str
     status: str
     password_hash: str | None
+    role: str = "beta_user"
 
     @property
     def active(self) -> bool:
@@ -45,7 +50,7 @@ class User:
 
 
 def _user(row: Any) -> User:
-    return User(id=row[0], email=row[1], display_name=row[2], status=row[3], password_hash=row[4])
+    return User(id=row[0], email=row[1], display_name=row[2], status=row[3], password_hash=row[4], role=row[5])
 
 
 def normalise_email(email: str) -> str:
@@ -77,11 +82,13 @@ async def list_users_by_emails(conn: AsyncConnection[Any], emails: list[str]) ->
     return [_user(row) for row in await cur.fetchall()]
 
 
-async def create_user(conn: AsyncConnection[Any], email: str, display_name: str, status: Status) -> User:
+async def create_user(
+    conn: AsyncConnection[Any], email: str, display_name: str, status: Status, role: str = "beta_user"
+) -> User:
     cur = await conn.execute(
-        f"""INSERT INTO public.users (email, display_name, status) VALUES (%s, %s, %s)
+        f"""INSERT INTO public.users (email, display_name, status, role) VALUES (%s, %s, %s, %s)
             RETURNING {_USER_COLUMNS}""",  # noqa: S608  # constant column list
-        (normalise_email(email), display_name.strip(), status),
+        (normalise_email(email), display_name.strip(), status, role),
     )
     row = await cur.fetchone()
     assert row is not None
@@ -94,6 +101,32 @@ async def set_password(conn: AsyncConnection[Any], user_id: UUID, password_hash:
 
 async def set_status(conn: AsyncConnection[Any], user_id: UUID, status: Status) -> None:
     await conn.execute("UPDATE public.users SET status = %s WHERE id = %s", (status, user_id))
+
+
+async def promote_admin(conn: AsyncConnection[Any], user_id: UUID) -> None:
+    """The IDENTITY_ADMIN_EMAILS bootstrap (spec SI-5): an approved administrator."""
+    await conn.execute("UPDATE public.users SET role = 'admin', status = 'approved' WHERE id = %s", (user_id,))
+
+
+async def find_user_by_oauth(conn: AsyncConnection[Any], provider: Provider, provider_user_id: str) -> User | None:
+    cur = await conn.execute(
+        f"""SELECT {", ".join(f"u.{c}" for c in _USER_COLUMNS.split(", "))}
+              FROM identity.oauth_accounts a JOIN public.users u ON u.id = a.user_id
+             WHERE a.provider = %s AND a.provider_user_id = %s""",  # noqa: S608  # constant column list
+        (provider, provider_user_id),
+    )
+    row = await cur.fetchone()
+    return _user(row) if row else None
+
+
+async def link_oauth(
+    conn: AsyncConnection[Any], user_id: UUID, provider: Provider, provider_user_id: str, email: str | None
+) -> None:
+    await conn.execute(
+        """INSERT INTO identity.oauth_accounts (provider, provider_user_id, user_id, email_at_link)
+           VALUES (%s, %s, %s, %s)""",
+        (provider, provider_user_id, user_id, email[:320] if email else None),
+    )
 
 
 async def touch_login(conn: AsyncConnection[Any], user_id: UUID) -> None:
