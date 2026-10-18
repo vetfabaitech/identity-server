@@ -3,9 +3,23 @@
 The web app validates again after the hand-off; this is the identity service's own line of defence.
 """
 
+from pathlib import Path
+
 import pytest
 
+from identity.config import Settings
 from identity.redirects import post_signin_target, valid_state
+
+DEFAULT, IDE = "https://test.vetfab.ai", "https://demo.vetfab.ai"
+S = Settings(
+    _env_file=None,  # pyright: ignore[reportCallIssue]
+    environment="staging",
+    database_url="postgresql://x@db/lms",
+    issuer="https://test.vetfab.ai/auth",
+    audience="vetfab",
+    app_origins=f"{DEFAULT},{IDE}",
+    keys_dir=Path("/keys"),
+)
 
 
 @pytest.mark.parametrize(
@@ -53,7 +67,48 @@ from identity.redirects import post_signin_target, valid_state
     ],
 )
 def test_post_signin_target(value: str | None, expected: str) -> None:
-    assert post_signin_target(value) == expected
+    target = post_signin_target(value, S)
+    assert (target.origin, target.path, target.param) == (DEFAULT, expected, expected)
+
+
+def test_allowlisted_absolute_url_targets_that_origin() -> None:
+    target = post_signin_target(f"{IDE}/projects/42?tab=files#top", S)
+    assert (target.origin, target.path) == (IDE, "/projects/42?tab=files#top")
+    assert target.param == f"{IDE}/projects/42?tab=files#top"
+    assert target.handoff_base == f"{IDE}/handoff"
+
+
+def test_absolute_url_on_the_default_origin_is_kept_as_a_path() -> None:
+    target = post_signin_target(f"{DEFAULT}/learn", S)
+    assert (target.origin, target.path, target.param) == (DEFAULT, "/learn", "/learn")
+
+
+def test_origin_without_a_path_lands_on_its_root() -> None:
+    assert post_signin_target(IDE, S).param == f"{IDE}/"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://evil.example/",
+        "https://demo.vetfab.ai.evil.example/x",
+        "https://demo.vetfab.ai@evil.example/x",
+        "http://demo.vetfab.ai/x",
+        "https://demo.vetfab.ai:8443/x",
+        "HTTPS://evil.example/x",
+        "javascript://demo.vetfab.ai/%0aalert(1)",
+        " https://demo.vetfab.ai/x",
+    ],
+)
+def test_foreign_origin_falls_back(value: str) -> None:
+    target = post_signin_target(value, S)
+    assert (target.origin, target.path, target.handoff_base) == (DEFAULT, "/", f"{DEFAULT}/handoff")
+
+
+def test_dot_segments_and_auth_flow_paths_still_apply_on_other_origins() -> None:
+    assert post_signin_target(f"{IDE}/a/%2e%2e/handoff", S).param == f"{IDE}/"
+    assert post_signin_target(f"{IDE}/a/..//evil.example", S).param == f"{IDE}/"
+    assert post_signin_target(f"{IDE}/a/../b", S).path == "/b"
 
 
 @pytest.mark.parametrize(

@@ -218,3 +218,41 @@ async def test_large_bodies_are_refused(client: httpx.AsyncClient) -> None:
         headers={**SAME_ORIGIN, "content-type": "application/x-www-form-urlencoded"},
     )
     assert response.status_code == 413
+
+
+IDE = "https://demo.vetfab.ai"
+
+
+@pytest.fixture
+async def two_origin_client(
+    login_url: str, pool: AsyncConnectionPool, keys_dir: Path
+) -> AsyncIterator[httpx.AsyncClient]:
+    settings = make_settings(login_url, keys_dir, app_origins=f"{ORIGIN},{IDE}")
+    async with client_for(build_app(settings, pool, keys_dir)) as c:
+        yield c
+
+
+async def test_handoff_can_land_on_another_allowlisted_origin(
+    two_origin_client: httpx.AsyncClient, make_user: Callable[..., User]
+) -> None:
+    user = make_user(password=PASSWORD)
+    response = await sign_in(two_origin_client, user.email, redirect=f"{IDE}/projects")
+    assert response.status_code == 303
+    location = response.headers["location"]
+    assert location.startswith(f"{IDE}/handoff#"), location
+    fragment = {k: v[0] for k, v in parse_qs(urlsplit(location).fragment).items()}
+    assert fragment["redirect"] == "/projects"
+    assert fragment["state"] == "s1"
+
+
+async def test_the_sign_in_page_echoes_an_absolute_target(two_origin_client: httpx.AsyncClient) -> None:
+    response = await two_origin_client.get("/auth/login", params={"redirect": f"{IDE}/p?x=1"})
+    assert 'name="redirect" value="https://demo.vetfab.ai/p?x=1"' in response.text
+
+
+async def test_a_foreign_absolute_target_lands_on_the_default_origin(
+    two_origin_client: httpx.AsyncClient, make_user: Callable[..., User]
+) -> None:
+    user = make_user(password=PASSWORD)
+    response = await sign_in(two_origin_client, user.email, redirect="https://evil.example/x")
+    assert response.headers["location"].startswith(f"{ORIGIN}/handoff#")

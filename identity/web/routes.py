@@ -20,7 +20,7 @@ from identity import sessions, store
 from identity.config import Settings
 from identity.keys import KeyRing
 from identity.passwords import MAX_PASSWORD_LENGTH, verify_password
-from identity.redirects import post_signin_target, safe_path, valid_state
+from identity.redirects import Target, post_signin_target, safe_path, valid_state
 from identity.sessions import Issued
 from identity.store import User
 from identity.tokens import mint_access_token
@@ -56,8 +56,8 @@ def _too_many(settings: Settings) -> str:
     return f"Too many attempts. Try again in {max(1, settings.rate_limit_window_seconds // 60)} minutes."
 
 
-def _picker_url(target: str, state: str | None) -> str:
-    query = {"redirect": target, **({"state": state} if state else {})}
+def _picker_url(target: Target, state: str | None) -> str:
+    query = {"redirect": target.param, **({"state": state} if state else {})}
     return f"/auth/test-accounts?{urlencode(query)}"
 
 
@@ -70,14 +70,14 @@ def render(request: Request, template: str, status: int = 200, **context: Any) -
 
 
 def _login_page(
-    request: Request, target: str, state: str | None, status: int = 200, message: str | None = None, email: str = ""
+    request: Request, target: Target, state: str | None, status: int = 200, message: str | None = None, email: str = ""
 ) -> HTMLResponse:
     return render(
         request,
         "login.html",
         status,
         title="Sign in",
-        redirect=target,
+        redirect=target.param,
         state=state or "",
         message=message,
         email=email,
@@ -89,11 +89,10 @@ def _refused(request: Request) -> HTMLResponse:
     return render(request, "message.html", 403, title="Sign-in refused", message=CROSS_SITE)
 
 
-def _handoff(request: Request, user: User, target: str, state: str | None) -> RedirectResponse:
-    settings = _settings(request)
-    token = mint_access_token(_keys(request), settings, user.id)
-    fragment = urlencode({"token": token, "redirect": target, **({"state": state} if state else {})})
-    return RedirectResponse(f"{settings.app_origin}/handoff#{fragment}", status_code=303)
+def _handoff(request: Request, user: User, target: Target, state: str | None) -> RedirectResponse:
+    token = mint_access_token(_keys(request), _settings(request), user.id)
+    fragment = urlencode({"token": token, "redirect": target.path, **({"state": state} if state else {})})
+    return RedirectResponse(f"{target.handoff_base}#{fragment}", status_code=303)
 
 
 async def _form(request: Request) -> dict[str, str]:
@@ -107,7 +106,7 @@ async def _form(request: Request) -> dict[str, str]:
 @router.get("/login")
 async def login_page(request: Request, redirect: str | None = None, state: str | None = None) -> Response:
     settings = _settings(request)
-    target, nonce = post_signin_target(redirect), valid_state(state)
+    target, nonce = post_signin_target(redirect, settings), valid_state(state)
     raw = request.cookies.get(cookies.cookie_name(cookies.REFRESH, settings))
     if not raw:
         return _login_page(request, target, nonce)
@@ -134,7 +133,7 @@ async def login(request: Request) -> Response:
     form = await _form(request)
     email = form.get("email", "")[:MAX_EMAIL_LENGTH].strip()
     password = form.get("password", "")
-    target, nonce = post_signin_target(form.get("redirect")), valid_state(form.get("state"))
+    target, nonce = post_signin_target(form.get("redirect"), settings), valid_state(form.get("state"))
     ip, agent = _client(request)
     keys = [f"email:{store.normalise_email(email)}", f"ip:{ip}"]
     async with _pool(request).connection() as conn:
@@ -197,7 +196,7 @@ async def health() -> dict[str, str]:
 
 def _picker_page(
     request: Request,
-    target: str,
+    target: Target,
     state: str | None,
     accounts: list[User] | None,
     status: int = 200,
@@ -208,11 +207,11 @@ def _picker_page(
         "test_accounts.html",
         status,
         title="Test accounts",
-        redirect=target,
+        redirect=target.param,
         state=state or "",
         accounts=accounts,
         message=message,
-        login_url=f"/auth/login?{urlencode({'redirect': target, **({'state': state} if state else {})})}",
+        login_url=f"/auth/login?{urlencode({'redirect': target.param, **({'state': state} if state else {})})}",
     )
 
 
@@ -225,7 +224,7 @@ async def test_accounts_page(request: Request, redirect: str | None = None, stat
     settings = _settings(request)
     if not settings.test_accounts:
         return _not_found()
-    target, nonce = post_signin_target(redirect), valid_state(state)
+    target, nonce = post_signin_target(redirect, settings), valid_state(state)
     if not cookies.test_pass_valid(settings, request.cookies.get(cookies.cookie_name(cookies.TEST_PASS, settings))):
         return _picker_page(request, target, nonce, None)
     async with _pool(request).connection() as conn:
@@ -241,7 +240,7 @@ async def unlock_test_accounts(request: Request) -> Response:
     if not same_origin(request, settings):
         return _refused(request)
     form = await _form(request)
-    target, nonce = post_signin_target(form.get("redirect")), valid_state(form.get("state"))
+    target, nonce = post_signin_target(form.get("redirect"), settings), valid_state(form.get("state"))
     ip, _ = _client(request)
     key = [f"pass:{ip}"]
     expected = settings.test_accounts_passphrase.get_secret_value() if settings.test_accounts_passphrase else ""
@@ -270,7 +269,7 @@ async def test_account_signin(request: Request) -> Response:
     if not cookies.test_pass_valid(settings, request.cookies.get(cookies.cookie_name(cookies.TEST_PASS, settings))):
         return render(request, "message.html", 403, title="Test accounts", message="Enter the passphrase first.")
     form = await _form(request)
-    target, nonce = post_signin_target(form.get("redirect")), valid_state(form.get("state"))
+    target, nonce = post_signin_target(form.get("redirect"), settings), valid_state(form.get("state"))
     try:
         user_id = UUID(form.get("user_id", ""))
     except ValueError:

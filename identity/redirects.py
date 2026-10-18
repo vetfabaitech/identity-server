@@ -1,5 +1,10 @@
 """Where the browser may go after sign-in, and the sign-in `state` nonce.
 
+A target is an allowlisted origin plus a path (spec SI-4). A path-only `redirect` lands on the default origin (the
+first of IDENTITY_APP_ORIGINS, the LMS web app), exactly as before; an absolute URL is accepted only when it starts
+with one of the allowlisted origins character for character, followed by nothing or a path, so userinfo, other ports
+and look-alike hosts never match.
+
 A port of apps/web/src/lib/auth/redirect.ts (`postSignInTarget`): a same-origin path, pre-screened for control
 characters, whitespace, backslashes and scheme-relative forms, with dot segments (also percent-encoded ones) resolved
 before the checks, the way the browser's URL parser would. The web app validates again after the hand-off; this is the
@@ -7,6 +12,9 @@ identity service's own line of defence, so it never echoes an attacker's URL int
 """
 
 import re
+from dataclasses import dataclass
+
+from identity.config import Settings
 
 MAX_REDIRECT_LENGTH = 2048
 MAX_STATE_LENGTH = 128
@@ -55,11 +63,39 @@ def _under(pathname: str, prefix: str) -> bool:
     return pathname == prefix or pathname.startswith(prefix + "/")
 
 
-def post_signin_target(value: str | None) -> str:
+@dataclass(frozen=True, slots=True)
+class Target:
+    """Where a hand-off lands: an allowlisted origin and a normalised same-origin path on it."""
+
+    origin: str
+    path: str
+    default_origin: str
+
+    @property
+    def param(self) -> str:
+        """The value to carry in forms and links: the bare path on the default origin, else origin + path."""
+        return self.path if self.origin == self.default_origin else f"{self.origin}{self.path}"
+
+    @property
+    def handoff_base(self) -> str:
+        return f"{self.origin}/handoff"
+
+
+def _signin_path(value: str | None) -> str:
     normalised = _normalise(value)
     if normalised is None or any(_under(normalised[0], p) for p in _AUTH_FLOW):
         return "/"
     return normalised[1]
+
+
+def post_signin_target(value: str | None, settings: Settings) -> Target:
+    default = settings.app_origin
+    if isinstance(value, str) and len(value) <= MAX_REDIRECT_LENGTH:
+        for origin in settings.app_origin_list:
+            rest = value[len(origin) :] if value.startswith(origin) else None
+            if rest is not None and (rest == "" or rest.startswith("/")):
+                return Target(origin, _signin_path(rest or "/"), default)
+    return Target(default, _signin_path(value), default)
 
 
 def safe_path(value: str | None, fallback: str = "/") -> str:
