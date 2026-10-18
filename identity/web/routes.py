@@ -26,7 +26,7 @@ from identity.sessions import Issued
 from identity.store import User
 from identity.tokens import mint_access_token
 from identity.web import cookies
-from identity.web.security import same_origin
+from identity.web.security import cors_headers, same_origin
 
 router = APIRouter(prefix="/auth")
 
@@ -185,6 +185,51 @@ async def logout(request: Request, redirect: str | None = None) -> Response:
                 await store.audit(conn, "logout", user_id=user_id, ip=ip, user_agent=agent)
     response = RedirectResponse(post_signout_target(redirect, settings), status_code=303)
     cookies.clear_cookie(response, cookies.REFRESH, settings)
+    return response
+
+
+# --------------------------------------------------------------------------- XHR renewal (spec SI-4)
+
+
+@router.options("/session/token")
+async def session_token_preflight(request: Request) -> Response:
+    cors = cors_headers(request, _settings(request))
+    if cors is None:
+        return Response(status_code=403)
+    headers = {
+        **cors,
+        "Access-Control-Allow-Methods": "POST",
+        "Access-Control-Allow-Headers": "content-type",
+        "Access-Control-Max-Age": "600",
+    }
+    return Response(status_code=204, headers=headers)
+
+
+@router.post("/session/token")
+async def session_token(request: Request) -> Response:
+    """A fresh access token from the refresh cookie, for a product page renewing in the background.
+
+    Only allowlisted origins get an answer they can read, and any other origin is refused before the database is
+    touched, so a foreign page cannot even rotate the cookie. The refresh token rotates exactly as on silent sign-in.
+    """
+    settings = _settings(request)
+    cors = cors_headers(request, settings)
+    if cors is None:
+        return JSONResponse({"error": "origin"}, status_code=403)
+    raw = request.cookies.get(cookies.cookie_name(cookies.REFRESH, settings))
+    ip, agent = _client(request)
+    async with _pool(request).connection() as conn:
+        renewal = await sessions.renew(conn, raw, settings, agent)
+        if isinstance(renewal, Issued):
+            await store.audit(conn, "refresh", user_id=renewal.user.id, ip=ip, user_agent=agent)
+    if not isinstance(renewal, Issued):
+        rejected = JSONResponse({"error": renewal.reason}, status_code=401, headers=cors)
+        cookies.clear_cookie(rejected, cookies.REFRESH, settings)
+        return rejected
+    token = mint_access_token(_keys(request), settings, renewal.user.id)
+    response = JSONResponse({"access_token": token, "expires_in": settings.access_token_seconds}, headers=cors)
+    if renewal.refresh_token:
+        cookies.set_refresh(response, renewal.refresh_token, settings)
     return response
 
 

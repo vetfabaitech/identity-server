@@ -274,3 +274,70 @@ async def test_the_ide_signs_out_through_a_same_site_post(
     two_origin_client.cookies.set(REFRESH, raw or "", domain="test.vetfab.ai", path="/auth")
     after = await two_origin_client.get("/auth/login")
     assert after.status_code == 200 and 'name="password"' in after.text, "the session is revoked"
+
+
+# --------------------------------------------------------------------------- XHR renewal (spec SI-4)
+
+
+async def test_renewal_returns_a_verified_token_and_rotates(
+    two_origin_client: httpx.AsyncClient, make_user: Callable[..., User], keys_dir: Path, tmp_path: Path
+) -> None:
+    user = make_user(password=PASSWORD)
+    handoff(await sign_in(two_origin_client, user.email))
+    first = two_origin_client.cookies.get(REFRESH)
+    response = await two_origin_client.post("/auth/session/token", headers={"origin": IDE})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["expires_in"] == 900
+    assert await verify(body["access_token"], keys_dir, tmp_path) == str(user.id)
+    assert response.headers["access-control-allow-origin"] == IDE
+    assert response.headers["access-control-allow-credentials"] == "true"
+    assert response.headers["cache-control"] == "no-store"
+    assert two_origin_client.cookies.get(REFRESH) not in (None, first), "the refresh token rotated"
+
+
+async def test_renewal_refuses_other_origins(
+    two_origin_client: httpx.AsyncClient, make_user: Callable[..., User]
+) -> None:
+    user = make_user(password=PASSWORD)
+    handoff(await sign_in(two_origin_client, user.email))
+    before = two_origin_client.cookies.get(REFRESH)
+    for headers in ({"origin": "https://evil.example"}, {}):
+        response = await two_origin_client.post("/auth/session/token", headers=headers)
+        assert response.status_code == 403
+        assert "access-control-allow-origin" not in response.headers
+    assert two_origin_client.cookies.get(REFRESH) == before
+    assert (await two_origin_client.post("/auth/session/token", headers={"origin": IDE})).status_code == 200
+
+
+async def test_renewal_without_cookie_is_401(two_origin_client: httpx.AsyncClient) -> None:
+    response = await two_origin_client.post("/auth/session/token", headers={"origin": IDE})
+    assert response.status_code == 401
+    assert response.json() == {"error": "unknown"}
+    assert response.headers["access-control-allow-origin"] == IDE, "so the IDE can read the 401"
+
+
+async def test_renewal_after_sign_out_is_401(
+    two_origin_client: httpx.AsyncClient, make_user: Callable[..., User]
+) -> None:
+    user = make_user(password=PASSWORD)
+    handoff(await sign_in(two_origin_client, user.email))
+    raw = two_origin_client.cookies.get(REFRESH)
+    await two_origin_client.post("/auth/logout", headers={"origin": IDE, "sec-fetch-site": "same-site"})
+    two_origin_client.cookies.set(REFRESH, raw or "", domain="test.vetfab.ai", path="/auth")
+    response = await two_origin_client.post("/auth/session/token", headers={"origin": IDE})
+    assert response.status_code == 401
+    assert response.json() == {"error": "revoked"}
+
+
+async def test_renewal_preflight(two_origin_client: httpx.AsyncClient) -> None:
+    ok = await two_origin_client.options(
+        "/auth/session/token", headers={"origin": IDE, "access-control-request-method": "POST"}
+    )
+    assert ok.status_code == 204
+    assert ok.headers["access-control-allow-origin"] == IDE
+    assert ok.headers["access-control-allow-methods"] == "POST"
+    assert ok.headers["access-control-max-age"] == "600"
+    refused = await two_origin_client.options("/auth/session/token", headers={"origin": "https://evil.example"})
+    assert refused.status_code == 403
+    assert "access-control-allow-origin" not in refused.headers
