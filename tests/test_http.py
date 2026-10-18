@@ -256,3 +256,21 @@ async def test_a_foreign_absolute_target_lands_on_the_default_origin(
     user = make_user(password=PASSWORD)
     response = await sign_in(two_origin_client, user.email, redirect="https://evil.example/x")
     assert response.headers["location"].startswith(f"{ORIGIN}/handoff#")
+
+
+async def test_the_ide_signs_out_through_a_same_site_post(
+    two_origin_client: httpx.AsyncClient, make_user: Callable[..., User]
+) -> None:
+    user = make_user(password=PASSWORD)
+    handoff(await sign_in(two_origin_client, user.email))
+    raw = two_origin_client.cookies.get(REFRESH)
+    response = await two_origin_client.post(
+        "/auth/logout",
+        params={"redirect": f"{IDE}/signed-out"},
+        headers={"origin": IDE, "sec-fetch-site": "same-site"},
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == f"{IDE}/signed-out"
+    two_origin_client.cookies.set(REFRESH, raw or "", domain="test.vetfab.ai", path="/auth")
+    after = await two_origin_client.get("/auth/login")
+    assert after.status_code == 200 and 'name="password"' in after.text, "the session is revoked"

@@ -1,9 +1,9 @@
 """Browser-facing protections: same-origin checks for state-changing posts, security headers, a body-size limit.
 
-`same_origin` ports apps/web/src/lib/auth/origin.ts: `Sec-Fetch-Site`, when present, must be `same-origin`, and
-`Origin` must be present and equal one of this deployment's origins (the identity service's own, from the issuer, and
-the web app's, from which sign-out arrives). On the test box and in production both are the same origin. Only outside
-staging and production, where the two run on different ports of localhost, is `same-site` accepted.
+`same_origin` ports apps/web/src/lib/auth/origin.ts: `Origin` must be present and equal one of this deployment's
+origins (the identity service's own, from the issuer, and every IDENTITY_APP_ORIGINS entry, from which sign-out
+arrives). `Sec-Fetch-Site`, when present, must be `same-origin` for the service's own origin once deployed; a sibling
+product origin (the IDE on demo.vetfab.ai) is `same-site` by construction and accepted as such (spec SI-3, §4).
 """
 
 from collections.abc import Awaitable, Callable, MutableMapping
@@ -31,20 +31,32 @@ def origin_of(url: str) -> str | None:
 
 
 def same_origin(request: Request, settings: Settings) -> bool:
-    allowed_sites = {"same-origin"} if settings.deployed else {"same-origin", "same-site"}
-    fetch_site = request.headers.get("sec-fetch-site")
-    if fetch_site is not None and fetch_site not in allowed_sites:
-        return False
     origin = request.headers.get("origin")
     if not origin or origin == "null":
         return False
-    return origin_of(origin) in {settings.app_origin, origin_of(settings.issuer)}
+    sender = origin_of(origin)
+    own = origin_of(settings.issuer)
+    if sender not in {*settings.app_origin_list, own}:
+        return False
+    # A product on a sibling host (the IDE posting its sign-out) is same-site by construction; a post claiming to come
+    # from this service's own origin must be same-origin once deployed.
+    allowed_sites = {"same-origin", "same-site"} if (sender != own or not settings.deployed) else {"same-origin"}
+    fetch_site = request.headers.get("sec-fetch-site")
+    return fetch_site is None or fetch_site in allowed_sites
+
+
+def cors_headers(request: Request, settings: Settings) -> dict[str, str] | None:
+    """Credentialed CORS headers for an allowlisted product origin, or None (spec SI-4 renewal)."""
+    origin = request.headers.get("origin")
+    if not origin or origin not in settings.app_origin_list:
+        return None
+    return {"Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true", "Vary": "Origin"}
 
 
 def security_headers(settings: Settings) -> dict[str, str]:
     csp = (
         "default-src 'none'; style-src 'self'; img-src 'self'; "
-        f"form-action 'self' {settings.app_origin}; frame-ancestors 'none'; base-uri 'none'"
+        f"form-action 'self' {' '.join(settings.app_origin_list)}; frame-ancestors 'none'; base-uri 'none'"
     )
     return {
         "Content-Security-Policy": csp,

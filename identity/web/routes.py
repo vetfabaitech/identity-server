@@ -20,7 +20,7 @@ from identity import sessions, store
 from identity.config import Settings
 from identity.keys import KeyRing
 from identity.passwords import MAX_PASSWORD_LENGTH, verify_password
-from identity.redirects import Target, post_signin_target, safe_path, valid_state
+from identity.redirects import Target, post_signin_target, post_signout_target, valid_state
 from identity.sessions import Issued
 from identity.store import User
 from identity.tokens import mint_access_token
@@ -176,7 +176,7 @@ async def logout(request: Request, redirect: str | None = None) -> Response:
             user_id = await sessions.revoke(conn, raw, "logout")
             if user_id:
                 await store.audit(conn, "logout", user_id=user_id, ip=ip, user_agent=agent)
-    response = RedirectResponse(safe_path(redirect, "/"), status_code=303)
+    response = RedirectResponse(post_signout_target(redirect, settings), status_code=303)
     cookies.clear_cookie(response, cookies.REFRESH, settings)
     return response
 

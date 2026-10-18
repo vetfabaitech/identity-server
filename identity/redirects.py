@@ -107,3 +107,17 @@ def safe_path(value: str | None, fallback: str = "/") -> str:
 def valid_state(value: str | None) -> str | None:
     """The web app's one-time sign-in nonce, passed through untouched when it is plausible."""
     return value if isinstance(value, str) and _STATE.match(value) else None
+
+
+def post_signout_target(value: str | None, settings: Settings) -> str:
+    """Where sign-out returns: a safe path on the default origin, or an absolute URL on another allowlisted origin.
+
+    Auth-flow paths are allowed here (the LMS returns to /signout?done=1).
+    """
+    if isinstance(value, str) and len(value) <= MAX_REDIRECT_LENGTH:
+        for origin in settings.app_origin_list:
+            rest = value[len(origin) :] if value.startswith(origin) else None
+            if rest is not None and (rest == "" or rest.startswith("/")):
+                path = safe_path(rest or "/")
+                return path if origin == settings.app_origin else f"{origin}{path}"
+    return safe_path(value)
