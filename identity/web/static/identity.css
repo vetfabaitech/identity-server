@@ -95,3 +95,17 @@ button.account {
 button.account:hover { border-color: var(--primary); background: var(--surface); }
 .account .email { color: var(--fg-muted); font-weight: 400; font-size: 13px; }
 .account .status { justify-self: start; font-size: 12px; font-weight: 600; color: var(--fg-muted); text-transform: capitalize; }
+.providers { display: grid; gap: 8px; }
+a.button.provider {
+  display: block;
+  padding: 10px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  color: var(--fg);
+  font-weight: 600;
+  text-align: center;
+  text-decoration: none;
+}
+a.button.provider:hover { border-color: var(--primary); }
+.divider { display: flex; align-items: center; gap: 12px; margin: 16px 0; color: var(--fg-muted); font-size: 13px; }
+.divider::before, .divider::after { content: ""; flex: 1; border-top: 1px solid var(--border); }

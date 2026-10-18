@@ -19,6 +19,7 @@ from starlette.concurrency import run_in_threadpool
 from identity import sessions, store
 from identity.config import Settings
 from identity.keys import KeyRing
+from identity.oauth import PROVIDERS, configured_providers
 from identity.passwords import MAX_PASSWORD_LENGTH, verify_password
 from identity.redirects import Target, post_signin_target, post_signout_target, valid_state
 from identity.sessions import Issued
@@ -72,6 +73,11 @@ def render(request: Request, template: str, status: int = 200, **context: Any) -
 def _login_page(
     request: Request, target: Target, state: str | None, status: int = 200, message: str | None = None, email: str = ""
 ) -> HTMLResponse:
+    query = urlencode({"redirect": target.param, **({"state": state} if state else {})})
+    providers = [
+        {"label": PROVIDERS[name].label, "href": f"/auth/oauth/{name}/start?{query}"}
+        for name in configured_providers(_settings(request))
+    ]
     return render(
         request,
         "login.html",
@@ -82,6 +88,7 @@ def _login_page(
         message=message,
         email=email,
         picker_url=_picker_url(target, state),
+        providers=providers,
     )
 
 

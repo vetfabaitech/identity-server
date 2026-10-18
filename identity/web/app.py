@@ -17,6 +17,7 @@ from psycopg_pool import AsyncConnectionPool
 from identity.config import Settings, get_settings
 from identity.db import login_problems, open_pool
 from identity.keys import KeyRing, NoSigningKeyError, generate_key
+from identity.web.oauth_routes import router as oauth_router
 from identity.web.routes import router
 from identity.web.security import BodyLimit, security_headers
 
@@ -75,5 +76,6 @@ def create_app(
 
     app.add_middleware(BodyLimit)
     app.include_router(router)
+    app.include_router(oauth_router)
     app.mount("/auth/static", StaticFiles(directory=HERE / "static"), name="static")
     return app
