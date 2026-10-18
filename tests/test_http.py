@@ -37,7 +37,7 @@ async def verify(token: str, keys_dir: Path, tmp_path: Path) -> str:
     jwks = tmp_path / "jwks.json"
     jwks.write_text(json.dumps(KeyRing.load(keys_dir).jwks()))
     verifier = TokenVerifier(
-        TokenPolicy(issuer="https://test.vetfab.ai/auth", audience="vetfab-lms"), JwksKeyStore(JwksSource(file=jwks))
+        TokenPolicy(issuer="https://test.vetfab.ai/auth", audience="vetfab"), JwksKeyStore(JwksSource(file=jwks))
     )
     return str((await verifier.verify(token)).user_id)
 

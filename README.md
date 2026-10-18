@@ -33,6 +33,19 @@ Sessions: the refresh token lives in an HttpOnly cookie on `Path=/auth`, is stor
 | `TEST_ACCOUNTS_PASSPHRASE` | At least 12 characters; gates the picker |
 | `TEST_ACCOUNTS_EMAILS` | Comma-separated accounts the picker offers, in order |
 | `TEST_ACCOUNTS_PASSWORD` | What `identity-admin seed-test-accounts` sets on them |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub OAuth app; GitHub sign-in is offered only when both are set |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google OAuth client (type "Web application"); same rule |
+| `ADMIN_EMAILS` | Comma-separated; these accounts become approved administrators on GitHub or Google sign-in |
+
+### OAuth callbacks to register
+
+Each provider redirects back to `<ISSUER>/oauth/<provider>/callback`. Register, per provider:
+
+- `https://test.vetfab.ai/auth/oauth/github/callback` and `http://localhost:8200/auth/oauth/github/callback`
+- `https://test.vetfab.ai/auth/oauth/google/callback` and `http://localhost:8200/auth/oauth/google/callback`
+
+An account is found by its provider link, else by an email the provider has verified (linked on first use), else
+created `pending`. A provider email that is not verified neither links nor creates an account (spec 2026-10-18 SI-5).
 
 ## Run and test
 

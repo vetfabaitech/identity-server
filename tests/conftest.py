@@ -146,7 +146,7 @@ def make_settings(login_url: str, keys_dir: Path, **overrides: object) -> "Setti
         "environment": "staging",
         "database_url": login_url,
         "issuer": "https://test.vetfab.ai/auth",
-        "audience": "vetfab-lms",
+        "audience": "vetfab",
         "app_origins": "https://test.vetfab.ai",
         "keys_dir": keys_dir,
         **overrides,

@@ -12,7 +12,7 @@ BASE: dict[str, Any] = {
     "environment": "staging",
     "database_url": "postgresql://lms_identity:x@db:5432/lms",
     "issuer": "https://test.vetfab.ai/auth",
-    "audience": "vetfab-lms",
+    "audience": "vetfab",
     "app_origins": "https://test.vetfab.ai",
     "keys_dir": "/keys",
 }

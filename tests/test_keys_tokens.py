@@ -15,7 +15,7 @@ from identity.tokens import mint_access_token
 from vetfab_authz.tokens import JwksKeyStore, JwksSource, TokenPolicy, TokenVerifier
 
 ISSUER = "https://test.vetfab.ai/auth"
-AUDIENCE = "vetfab-lms"
+AUDIENCE = "vetfab"
 
 
 def settings_for(keys_dir: Path) -> Settings:
