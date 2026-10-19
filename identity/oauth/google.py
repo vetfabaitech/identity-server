@@ -38,7 +38,7 @@ class Google:
             return await self._fetch(settings, code, http)
         except httpx.HTTPError as exc:
             raise OAuthError("provider", type(exc).__name__) from exc
-        except (ValueError, KeyError, TypeError) as exc:
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
             raise OAuthError("provider", "unexpected response") from exc
         finally:
             if owned:

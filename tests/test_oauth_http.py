@@ -252,3 +252,25 @@ async def test_state_mismatch_is_logged(client: httpx.AsyncClient, caplog: pytes
     with caplog.at_level("WARNING", logger="identity.oauth"):
         await client.get("/auth/oauth/github/callback", params={"code": "c", "state": "forged"})
     assert any("state" in r.getMessage() for r in caplog.records)
+
+
+async def test_the_callback_is_rate_limited_per_address(
+    login_url: str, pool: AsyncConnectionPool, keys_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every bogus callback would otherwise cost an outbound token exchange carrying the client secret."""
+    limited = make_settings(
+        login_url, keys_dir, app_origins=f"{ORIGIN},{IDE}", github_client_id="gh-id", github_client_secret="gh-secret",
+        rate_limit_attempts=3,
+    )  # fmt: skip
+    codes = fake_github(monkeypatch, OAuthError("provider", "bad_verification_code"))
+    async with client_for(build_app(limited, pool, keys_dir)) as c:
+        for _ in range(3):
+            nonce = await start(c)
+            assert (
+                await c.get("/auth/oauth/github/callback", params={"code": "bogus", "state": nonce})
+            ).status_code == 502
+        nonce = await start(c)
+        response = await c.get("/auth/oauth/github/callback", params={"code": "bogus", "state": nonce})
+    assert response.status_code == 429
+    assert "Too many attempts" in response.text
+    assert len(codes) == 3, "the fourth code is never sent to GitHub"

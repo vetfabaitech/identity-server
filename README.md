@@ -8,7 +8,7 @@ The service is mounted under `/auth` on the same origin as the web app. A sign-i
 |---|---|
 | `GET /auth/login?redirect&state` | Silent sign-in from the refresh cookie, or the sign-in form |
 | `POST /auth/login` | Email and password (argon2id), rate-limited per email and per address |
-| `POST /auth/logout?redirect` | Revokes the session; reached from the web app's sign-out through a 307 |
+| `POST /auth/logout?redirect` | Revokes the session. Reached from the LMS's sign-out through a 307, or posted by a sibling product (the IDE) same-site; `redirect` may be a path or an absolute URL on an `APP_ORIGINS` origin |
 | `GET/POST /auth/test-accounts`, `POST /auth/test-accounts/signin` | Test-accounts mode (off by default, refused in production) |
 | `POST /auth/session/token` | A new access token from the refresh cookie, for allowlisted origins only (CORS with credentials); rotates the cookie |
 | `GET /auth/oauth/{provider}/start`, `GET …/callback` | GitHub and Google sign-in (providers with an id and secret set) |

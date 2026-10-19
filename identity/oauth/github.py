@@ -50,7 +50,7 @@ class GitHub:
             return await self._fetch(settings, code, http)
         except httpx.HTTPError as exc:
             raise OAuthError("provider", type(exc).__name__) from exc
-        except (ValueError, KeyError, TypeError) as exc:
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
             raise OAuthError("provider", "unexpected response") from exc
         finally:
             if owned:
@@ -87,5 +87,5 @@ class GitHub:
             provider_user_id=str(user["id"]),
             email=str(claimed) if claimed else None,
             email_verified=verified is not None,
-            display_name=str(user.get("name") or user["login"]),
+            display_name=(str(user.get("name") or "").strip() or str(user["login"])),
         )

@@ -199,3 +199,27 @@ async def test_the_provider_error_code_is_kept_for_the_log() -> None:
             await PROVIDERS["github"].fetch_profile(settings(), "code", c)
     assert "redirect_uri_mismatch" in str(caught.value)
     assert "gh-secret" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("provider", "routes"),
+    [
+        ("github", {GH_TOKEN: (200, {"access_token": "t"}), GH_USER: (200, ["not", "an", "object"])}),
+        ("google", {G_TOKEN: (200, {"access_token": "t"}), G_USER: (200, ["not", "an", "object"])}),
+    ],
+)
+async def test_a_non_object_profile_is_an_oauth_error_not_a_crash(provider: str, routes: dict[str, Any]) -> None:
+    async with client(routes) as c:
+        with pytest.raises(OAuthError):
+            await PROVIDERS[provider].fetch_profile(settings(), "code", c)
+
+
+async def test_a_blank_github_name_falls_back_to_the_login() -> None:
+    routes = {
+        GH_TOKEN: (200, {"access_token": "t"}),
+        GH_USER: (200, {"id": 7, "login": "octo", "name": "   ", "email": None}),
+        GH_EMAILS: (200, [{"email": "octo@x.io", "primary": True, "verified": True}]),
+    }
+    async with client(routes) as c:
+        profile = await PROVIDERS["github"].fetch_profile(settings(), "code", c)
+    assert profile.display_name == "octo"

@@ -89,7 +89,7 @@ def test_access_tokens_never_outlive_fifteen_minutes() -> None:
 
 def test_app_origins_is_a_normalised_list() -> None:
     settings = make(app_origins=" https://test.vetfab.ai/ ,https://demo.vetfab.ai:443/x, https://test.vetfab.ai")
-    assert settings.app_origin_list == ["https://test.vetfab.ai", "https://demo.vetfab.ai:443"]
+    assert settings.app_origin_list == ["https://test.vetfab.ai", "https://demo.vetfab.ai"]
     assert settings.app_origin == "https://test.vetfab.ai"
 
 
@@ -117,3 +117,20 @@ def test_provider_secrets_are_secret() -> None:
     assert "shh" not in repr(settings)
     assert settings.github_client_secret is not None
     assert settings.github_client_secret.get_secret_value() == "shh"
+
+
+def test_default_ports_are_dropped_so_entries_match_browser_origins() -> None:
+    """A browser's Origin header never carries the scheme's default port."""
+    settings = make(
+        environment="development", app_origins="https://demo.vetfab.ai:443,http://localhost:80,http://localhost:3000"
+    )
+    assert settings.app_origin_list == ["https://demo.vetfab.ai", "http://localhost", "http://localhost:3000"]
+
+
+@pytest.mark.parametrize(
+    "issuer", ["https://test.vetfab.ai/auth", "https://accounts.vetfab.ai", "https://accounts.vetfab.ai/auth/"]
+)
+def test_oauth_redirect_uri_follows_the_mounted_route(issuer: str) -> None:
+    """The callback route is always /auth/oauth/<provider>/callback on the service's origin, whatever the issuer path."""
+    origin = issuer.split("/auth")[0].rstrip("/")
+    assert make(issuer=issuer).oauth_redirect_uri("github") == f"{origin}/auth/oauth/github/callback"

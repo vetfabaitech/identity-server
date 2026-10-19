@@ -79,7 +79,11 @@ class Settings(BaseSettings):
             parts = urlsplit(raw.strip())
             if parts.scheme not in ("http", "https") or not parts.netloc:
                 raise ValueError("IDENTITY_APP_ORIGINS must list http(s) origins.")
-            origin = f"{parts.scheme}://{parts.netloc}"
+            # A browser's Origin header never carries the scheme's default port, so neither may an entry.
+            default_port = {"http": 80, "https": 443}[parts.scheme]
+            host = parts.hostname or ""
+            port = f":{parts.port}" if parts.port and parts.port != default_port else ""
+            origin = f"{parts.scheme}://{host}{port}"
             if origin not in origins:
                 origins.append(origin)
         if not origins:
@@ -119,7 +123,10 @@ class Settings(BaseSettings):
         return _email_list(self.admin_emails)
 
     def oauth_redirect_uri(self, provider: str) -> str:
-        return f"{self.issuer.rstrip('/')}/oauth/{provider}/callback"
+        """The provider callback: always the mounted route /auth/oauth/<provider>/callback on the issuer's origin, so a
+        go-live issuer without the /auth suffix (https://accounts.vetfab.ai) still registers the right URL."""
+        parts = urlsplit(self.issuer)
+        return f"{parts.scheme}://{parts.netloc}/auth/oauth/{provider}/callback"
 
     @property
     def deployed(self) -> bool:

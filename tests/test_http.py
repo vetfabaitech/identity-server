@@ -297,7 +297,7 @@ async def test_renewal_returns_a_verified_token_and_rotates(
 
 
 async def test_renewal_refuses_other_origins(
-    two_origin_client: httpx.AsyncClient, make_user: Callable[..., User]
+    two_origin_client: httpx.AsyncClient, make_user: Callable[..., User], owner_url: str
 ) -> None:
     user = make_user(password=PASSWORD)
     handoff(await sign_in(two_origin_client, user.email))
@@ -307,7 +307,13 @@ async def test_renewal_refuses_other_origins(
         assert response.status_code == 403
         assert "access-control-allow-origin" not in response.headers
     assert two_origin_client.cookies.get(REFRESH) == before
-    assert (await two_origin_client.post("/auth/session/token", headers={"origin": IDE})).status_code == 200
+    import psycopg
+
+    with psycopg.connect(owner_url) as conn:
+        rows = conn.execute(
+            "SELECT count(*), count(rotated_at) FROM identity.refresh_tokens WHERE user_id = %s", (user.id,)
+        ).fetchone()
+    assert rows == (1, 0), "nothing was issued or rotated for the refused origins"
 
 
 async def test_renewal_without_cookie_is_401(two_origin_client: httpx.AsyncClient) -> None:

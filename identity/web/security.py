@@ -41,6 +41,8 @@ def same_origin(request: Request, settings: Settings, *, allow_siblings: bool = 
     if not origin or origin == "null":
         return False
     sender = origin_of(origin)
+    if sender is None:
+        return False
     if sender in {settings.app_origin, origin_of(settings.issuer)}:
         allowed_sites = {"same-origin"} if settings.deployed else {"same-origin", "same-site"}
     elif allow_siblings and sender in settings.app_origin_list:

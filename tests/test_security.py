@@ -90,3 +90,8 @@ def test_csp_lists_every_origin() -> None:
 )
 def test_post_signout_target(value: str | None, expected: str) -> None:
     assert post_signout_target(value, settings()) == expected
+
+
+def test_an_unparseable_origin_is_refused_even_with_an_unparseable_issuer() -> None:
+    s = settings("development", issuer="not-a-url", app_origins="http://localhost:3100")
+    assert not same_origin(request({"origin": "garbage"}), s)

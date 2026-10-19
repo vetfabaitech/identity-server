@@ -18,7 +18,7 @@ from identity.oauth import PROVIDERS, OAuthError, Provider
 from identity.oauth.resolve import resolve_user
 from identity.redirects import Target, post_signin_target, valid_state
 from identity.web import cookies
-from identity.web.routes import INACTIVE, _client, _handoff, _login_page, _pool, _settings
+from identity.web.routes import INACTIVE, _client, _handoff, _login_page, _pool, _settings, _too_many
 
 router = APIRouter(prefix="/auth/oauth")
 log = logging.getLogger("identity.oauth")
@@ -50,6 +50,11 @@ async def oauth_start(request: Request, name: str, redirect: str | None = None, 
     return response
 
 
+async def _record_failure(request: Request, keys: list[str]) -> None:
+    async with _pool(request).connection() as conn:
+        await store.record_failure(conn, keys, window_seconds=_settings(request).rate_limit_window_seconds)
+
+
 async def _audit_failure(request: Request, provider: str, reason: str, ip: str, agent: str | None) -> None:
     async with _pool(request).connection() as conn:
         await store.audit(
@@ -74,19 +79,28 @@ async def oauth_callback(
     remembered = cookies.read_oauth_state(request.cookies.get(cookies.cookie_name(cookies.OAUTH_STATE, settings)))
     target = post_signin_target(remembered.redirect if remembered else None, settings)
     nonce = valid_state(remembered.state) if remembered else None
+    ip, agent = _client(request)
+    # Per-address limit before anything else: every accepted callback costs an outbound token exchange carrying the
+    # client secret, and bogus ones could get the OAuth app throttled by the provider.
+    limit_key = [f"oauth:{ip}"]
+    async with _pool(request).connection() as conn:
+        limit, window = settings.rate_limit_attempts, settings.rate_limit_window_seconds
+        if await store.rate_limited(conn, limit_key, limit=limit, window_seconds=window):
+            return _fail(request, target, nonce, 429, _too_many(settings))
     if remembered is None or not state or not hmac.compare_digest(state.encode(), remembered.nonce.encode()):
         log.warning(
             "oauth %s callback refused: state %s", provider.name, "cookie missing" if remembered is None else "mismatch"
         )
+        await _record_failure(request, limit_key)
         return _fail(request, target, nonce, 400, OAUTH_STATE_MESSAGE)
     if error or not code:
         return _fail(request, target, nonce, 400, OAUTH_DENIED.format(provider=provider.label))
-    ip, agent = _client(request)
     try:
         profile = await provider.fetch_profile(settings, code)
     except OAuthError as exc:
         log.warning("oauth %s sign-in failed: %s", provider.name, exc)
         await _audit_failure(request, provider.name, "oauth_provider", ip, agent)
+        await _record_failure(request, limit_key)
         return _fail(request, target, nonce, 502, OAUTH_FAILED.format(provider=provider.label))
 
     async with _pool(request).connection() as conn:
