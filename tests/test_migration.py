@@ -196,3 +196,51 @@ def test_downgrade_to_0001_removes_oauth_accounts(scratch: str) -> None:
         conn.execute("INSERT INTO identity.audit (action) VALUES ('oauth_signin')")
     alembic(url, "upgrade", "head")
     assert "oauth_accounts" in tables(url)
+
+
+# --------------------------------------------------------------------------- 0003: legacy IDE links (spec 2026-10-18 SI-5)
+
+IDE_USERS = """
+CREATE TABLE public.users (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  oauth_provider text,
+  oauth_id text,
+  username text UNIQUE,
+  display_name text NOT NULL,
+  email text NOT NULL UNIQUE,
+  status text NOT NULL DEFAULT 'pending',
+  role text NOT NULL DEFAULT 'beta_user',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (oauth_provider, oauth_id)
+);
+"""
+
+
+def test_0003_backfills_links_from_the_ide_users_table(scratch: str) -> None:
+    """The IDE's users table (shared, SI-2) carries each account's sign-in provider; existing GitHub users must sign
+    straight into their old account through the identity service."""
+    url = db_url(scratch)
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute(cast(LiteralString, IDE_USERS))
+        conn.execute(
+            """INSERT INTO public.users (oauth_provider, oauth_id, username, display_name, email, status) VALUES
+               ('github', '1001', 'octo', 'Octo', 'Octo@X.test', 'approved'),
+               ('google', 'g-7', 'gina', 'Gina', 'gina@x.test', 'pending'),
+               ('password', 'p-1', 'pat', 'Pat', 'pat@x.test', 'approved'),
+               (NULL, NULL, NULL, 'New', 'new@x.test', 'pending')"""
+        )
+    alembic(url, "upgrade", "head")
+    with psycopg.connect(url) as conn:
+        links = conn.execute(
+            """SELECT a.provider, a.provider_user_id, u.username, a.email_at_link
+                 FROM identity.oauth_accounts a JOIN public.users u ON u.id = a.user_id ORDER BY a.provider"""
+        ).fetchall()
+    assert links == [("github", "1001", "octo", "Octo@X.test"), ("google", "g-7", "gina", "gina@x.test")]
+
+
+def test_0003_is_a_no_op_without_the_ide_columns(scratch: str) -> None:
+    url = db_url(scratch)
+    alembic(url, "upgrade", "head")
+    assert "oauth_accounts" in tables(url)
+    alembic(url, "downgrade", "0002")
+    alembic(url, "upgrade", "head")
