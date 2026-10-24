@@ -19,8 +19,14 @@ async def _configure(conn: AsyncConnection[Any]) -> None:
 
 
 async def open_pool(url: str, *, min_size: int = 1, max_size: int = 10) -> AsyncConnectionPool[Any]:
+    # `check`: a connection is tested on checkout, so a restarted database does not fail the next sign-in.
     pool: AsyncConnectionPool[Any] = AsyncConnectionPool(
-        url, min_size=min_size, max_size=max_size, open=False, configure=_configure
+        url,
+        min_size=min_size,
+        max_size=max_size,
+        open=False,
+        configure=_configure,
+        check=AsyncConnectionPool.check_connection,
     )
     await pool.open(wait=True, timeout=15)
     return pool

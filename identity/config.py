@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     rate_limit_attempts: int = Field(default=10, ge=3, le=100)
     rate_limit_window_seconds: int = Field(default=600, ge=60, le=86_400)
 
+    # Password checks running at once per process, and how long a sign-in waits for one before answering
+    # 503 busy (perf design 2026-10-24 §10). Each argon2id check takes 64 MiB (passwords.py), so 2 fits the
+    # 256 MiB container; unbounded checks were OOM-killed by 60 simultaneous sign-ins.
+    max_concurrent_verifies: int = Field(default=2, ge=1, le=64)
+    verify_queue_seconds: float = Field(default=3.0, ge=0.5, le=30)
+
     # Test-accounts mode (spec TD-9): a passphrase-gated page that signs in as one of the listed accounts.
     # Refused in production.
     test_accounts: bool = False

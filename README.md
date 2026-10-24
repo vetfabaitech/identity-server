@@ -29,6 +29,7 @@ Sessions: the refresh token lives in an HttpOnly cookie on `Path=/auth`, is stor
 | `ACCESS_TOKEN_SECONDS` | 900 (at most 900) |
 | `REFRESH_TOKEN_DAYS`, `REFRESH_GRACE_SECONDS` | 30 days, 30 seconds |
 | `RATE_LIMIT_ATTEMPTS`, `RATE_LIMIT_WINDOW_SECONDS` | 10 failures per 600 seconds |
+| `MAX_CONCURRENT_VERIFIES`, `VERIFY_QUEUE_SECONDS` | 2 password checks at once per process (64 MiB each), and a 3-second wait for one before sign-in answers 503 busy with `Retry-After: 2` |
 | `TEST_ACCOUNTS` | `true` enables the picker; refused in production |
 | `TEST_ACCOUNTS_PASSPHRASE` | At least 12 characters; gates the picker |
 | `TEST_ACCOUNTS_EMAILS` | Comma-separated accounts the picker offers, in order |

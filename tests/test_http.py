@@ -361,3 +361,96 @@ async def test_the_ide_cannot_post_the_sign_in_form(
     )
     assert response.status_code == 403
     assert "set-cookie" not in response.headers
+
+
+# --------------------------------------------------------------------------- bounded password checks (perf design §10)
+
+
+def _slow_verify(monkeypatch: pytest.MonkeyPatch, seconds: float) -> dict[str, int]:
+    """Wraps the real check with a delay and records how many run at once."""
+    import threading
+    import time
+
+    from identity.web import routes
+
+    real = routes.verify_password
+    lock = threading.Lock()
+    seen = {"running": 0, "most": 0}
+
+    def slow(password_hash: str | None, password: str) -> bool:
+        with lock:
+            seen["running"] += 1
+            seen["most"] = max(seen["most"], seen["running"])
+        try:
+            time.sleep(seconds)
+            return real(password_hash, password)
+        finally:
+            with lock:
+                seen["running"] -= 1
+
+    monkeypatch.setattr(routes, "verify_password", slow)
+    return seen
+
+
+async def test_at_most_two_verifies_run_at_once(
+    client: httpx.AsyncClient, make_user: Callable[..., User], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    users = [make_user(password=PASSWORD) for _ in range(6)]
+    seen = _slow_verify(monkeypatch, 0.3)
+    responses = await asyncio.gather(*(sign_in(client, u.email) for u in users))
+    assert [r.status_code for r in responses] == [303] * 6
+    assert seen["most"] == 2
+
+
+async def test_sign_in_answers_503_when_the_queue_is_full(
+    settings: Settings,
+    pool: AsyncConnectionPool,
+    keys_dir: Path,
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    busy = settings.model_copy(update={"max_concurrent_verifies": 1, "verify_queue_seconds": 0.5})
+    first, second = make_user(password=PASSWORD), make_user(password=PASSWORD)
+    _slow_verify(monkeypatch, 1.5)
+    async with client_for(build_app(busy, pool, keys_dir)) as c:
+        slow = asyncio.create_task(sign_in(c, first.email))
+        await asyncio.sleep(0.2)
+        shed = await sign_in(c, second.email)
+        assert (await slow).status_code == 303
+    assert shed.status_code == 503
+    assert shed.headers["retry-after"] == "2"
+    assert "busy" in shed.text.lower()
+
+
+async def test_no_connection_is_held_while_hashing(
+    settings: Settings,
+    login_url: str,
+    keys_dir: Path,
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import time
+
+    from identity.db import open_pool
+
+    user = make_user(password=PASSWORD)
+    _slow_verify(monkeypatch, 1.5)
+    single = await open_pool(login_url, max_size=1)
+    try:
+        async with client_for(build_app(settings, single, keys_dir)) as c:
+            signing_in = asyncio.create_task(sign_in(c, user.email))
+            await asyncio.sleep(0.3)
+            started = time.monotonic()
+            # A silent sign-in attempt reads the database (the refresh-token lookup).
+            page = await c.get("/auth/login", headers={"cookie": f"{REFRESH}=not-a-real-token"})
+            waited = time.monotonic() - started
+            assert (await signing_in).status_code == 303
+    finally:
+        await single.close()
+    assert page.status_code == 200
+    assert waited < 1.0, waited

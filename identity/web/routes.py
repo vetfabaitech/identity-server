@@ -5,6 +5,7 @@ implements (apps/web/src/app/(auth)/handoff). The access token travels only in t
 to a server or put in a Referer.
 """
 
+import asyncio
 import hmac
 from typing import Any
 from urllib.parse import urlencode
@@ -32,6 +33,8 @@ router = APIRouter(prefix="/auth")
 
 INCORRECT = "Email or password is incorrect."
 INACTIVE = "This account is not active. Contact your Vetfab administrator."
+BUSY = "Sign-in is busy right now. Wait a few seconds and try again."
+RETRY_AFTER_SECONDS = 2
 CROSS_SITE = "This request did not come from the Vetfab sign-in page. Open the sign-in page and try again."
 WRONG_PASSPHRASE = "That passphrase is not right."  # noqa: S105  # a user-facing message
 MAX_EMAIL_LENGTH = 320
@@ -143,12 +146,27 @@ async def login(request: Request) -> Response:
     target, nonce = post_signin_target(form.get("redirect"), settings), valid_state(form.get("state"))
     ip, agent = _client(request)
     keys = [f"email:{store.normalise_email(email)}", f"ip:{ip}"]
+    limit, window = settings.rate_limit_attempts, settings.rate_limit_window_seconds
     async with _pool(request).connection() as conn:
-        limit, window = settings.rate_limit_attempts, settings.rate_limit_window_seconds
         if await store.rate_limited(conn, keys, limit=limit, window_seconds=window):
             return _login_page(request, target, nonce, 429, _too_many(settings), email)
         user = await store.find_user_by_email(conn, email) if email else None
+    # The hash runs without a database connection and under a process-wide bound (perf design §10): each check
+    # takes 64 MiB, and a pooled connection held for its duration starved every other request. Unknown emails
+    # still hash (against a dummy) under the same bound, so timing does not reveal which emails exist.
+    slots: asyncio.Semaphore = request.app.state.verify_slots
+    try:
+        async with asyncio.timeout(settings.verify_queue_seconds):
+            await slots.acquire()
+    except TimeoutError:
+        busy = _login_page(request, target, nonce, 503, BUSY, email)
+        busy.headers["Retry-After"] = str(RETRY_AFTER_SECONDS)
+        return busy
+    try:
         matched = await run_in_threadpool(verify_password, user.password_hash if user else None, password)
+    finally:
+        slots.release()
+    async with _pool(request).connection() as conn:
         if user is None or not matched or len(password) > MAX_PASSWORD_LENGTH:
             await store.record_failure(conn, keys, window_seconds=window)
             await store.audit(

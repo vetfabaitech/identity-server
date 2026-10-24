@@ -4,6 +4,7 @@ Settings are validated when the app is created. At startup the service refuses (
 privileged database login, and refuses to serve without a signing key; in development a missing key is generated.
 """
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -65,6 +66,8 @@ def create_app(
     app.state.pool = pool
     app.state.keys = keys
     app.state.templates = Jinja2Templates(directory=HERE / "templates")
+    # Bounds concurrent password checks (perf design §10); see routes.login().
+    app.state.verify_slots = asyncio.Semaphore(settings.max_concurrent_verifies)
     headers = security_headers(settings)
 
     @app.middleware("http")
