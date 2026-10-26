@@ -95,3 +95,15 @@ def test_post_signout_target(value: str | None, expected: str) -> None:
 def test_an_unparseable_origin_is_refused_even_with_an_unparseable_issuer() -> None:
     s = settings("development", issuer="not-a-url", app_origins="http://localhost:3100")
     assert not same_origin(request({"origin": "garbage"}), s)
+
+
+def test_on_its_own_host_identity_accepts_the_lms_sign_out_but_not_its_sign_in() -> None:
+    """Identity at accounts.vetfab.ai: the LMS (first app origin) is then a sibling like the IDE. Its sign-out form
+    arrives same-site and must be accepted; a sign-in form posted from it must still be refused (login CSRF)."""
+    s = settings("staging", issuer="https://accounts.vetfab.ai/auth")
+    lms_post = request({"origin": LMS, "sec-fetch-site": "same-site"})
+    assert same_origin(lms_post, s, allow_siblings=True)
+    assert not same_origin(lms_post, s)
+    own = request({"origin": "https://accounts.vetfab.ai", "sec-fetch-site": "same-origin"})
+    assert same_origin(own, s)
+    assert not same_origin(request({"origin": "https://accounts.vetfab.ai", "sec-fetch-site": "same-site"}), s)

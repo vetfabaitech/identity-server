@@ -1,8 +1,9 @@
 """Browser-facing protections: same-origin checks for state-changing posts, security headers, a body-size limit.
 
 `same_origin` ports apps/web/src/lib/auth/origin.ts: `Origin` must be present and be the identity service's own
-origin or the default app origin, with `Sec-Fetch-Site: same-origin` once deployed. Sign-out alone also accepts the
-other IDENTITY_APP_ORIGINS (the IDE on demo.vetfab.ai), which are `same-site` by construction (spec SI-3, §4).
+origin or the default app origin, with `Sec-Fetch-Site: same-origin` once deployed. Sign-out alone also accepts every
+IDENTITY_APP_ORIGINS entry on another host (the IDE; the LMS too when identity runs on its own host), which posts
+`same-site` by construction (spec SI-3, §4; docs/operations/three-deployments.md).
 """
 
 from collections.abc import Awaitable, Callable, MutableMapping
@@ -43,9 +44,13 @@ def same_origin(request: Request, settings: Settings, *, allow_siblings: bool = 
     sender = origin_of(origin)
     if sender is None:
         return False
-    if sender in {settings.app_origin, origin_of(settings.issuer)}:
+    own = origin_of(settings.issuer)
+    # The service's own pages, and the LMS while it shares the service's host (the test box layout), must post
+    # same-origin once deployed. Any app origin on another host is a sibling (identity on its own host, or the IDE).
+    sibling = allow_siblings and sender in settings.app_origin_list and sender != own
+    if sender in {own, settings.app_origin} and not sibling:
         allowed_sites = {"same-origin"} if settings.deployed else {"same-origin", "same-site"}
-    elif allow_siblings and sender in settings.app_origin_list:
+    elif sibling:
         allowed_sites = {"same-origin", "same-site"}
     else:
         return False
