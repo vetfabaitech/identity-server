@@ -68,7 +68,7 @@ def cors_headers(request: Request, settings: Settings) -> dict[str, str] | None:
 
 def security_headers(settings: Settings) -> dict[str, str]:
     csp = (
-        "default-src 'none'; style-src 'self'; img-src 'self'; "
+        "default-src 'none'; style-src 'self'; img-src 'self'; script-src 'self'; connect-src 'self'; "
         f"form-action 'self' {' '.join(settings.app_origin_list)}; frame-ancestors 'none'; base-uri 'none'"
     )
     return {

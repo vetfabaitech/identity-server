@@ -54,6 +54,7 @@ body {
 .brand { margin: 0 0 4px; font-weight: 700; letter-spacing: 0.02em; color: var(--primary); }
 h1 { margin: 0 0 16px; font-size: 22px; line-height: 1.25; }
 .lede { color: var(--fg-muted); margin: 0 0 16px; }
+.notice { margin: 8px 0 0; font-size: 0.95em; color: var(--muted, inherit); }
 .message { margin: 0 0 16px; padding: 10px 12px; border-radius: 8px; background: var(--danger-soft); color: var(--danger); }
 .stack { display: grid; gap: 8px; }
 label { font-weight: 600; font-size: 14px; }

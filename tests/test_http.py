@@ -571,3 +571,39 @@ async def test_failures_from_one_address_do_not_lock_the_account_elsewhere(
         assert (await sign_in(third_attacker, user.email, password="nope nope nope")).status_code == 401
         # Four failures against the account from anywhere since the last success: now everyone waits for the window.
         assert (await sign_in(owner, user.email)).status_code == 429
+
+
+# --------------------------------------------------------------------------- automatic retry when busy (load test 2026-10-26, finding 2)
+
+
+async def test_the_sign_in_page_loads_the_retry_script_and_tells_it_the_limits(client: httpx.AsyncClient) -> None:
+    response = await client.get("/auth/login", params={"redirect": "/learn", "state": "abc"})
+    assert response.status_code == 200
+    assert '<script src="/auth/static/signin.js" defer></script>' in response.text
+    assert 'data-retry-budget-seconds="180"' in response.text
+    script = await client.get("/auth/static/signin.js")
+    assert script.status_code == 200 and "Retry-After" in script.text
+
+
+async def test_the_busy_page_keeps_the_form_and_the_email_and_says_how_long_to_wait(
+    settings: Settings,
+    pool: AsyncConnectionPool,
+    keys_dir: Path,
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """What the script sees when the service is busy: 503, Retry-After, the same form with the email filled in."""
+    import asyncio
+
+    busy = settings.model_copy(update={"max_concurrent_verifies": 1, "verify_queue_seconds": 0.5})
+    first, second = make_user(password=PASSWORD), make_user(password=PASSWORD)
+    _slow_verify(monkeypatch, 1.5)
+    async with client_for(build_app(busy, pool, keys_dir)) as c:
+        slow = asyncio.create_task(sign_in(c, first.email))
+        await asyncio.sleep(0.2)
+        shed = await sign_in(c, second.email)
+        assert (await slow).status_code == 303
+    assert shed.status_code == 503 and shed.headers["retry-after"] == "2"
+    assert f'value="{second.email}"' in shed.text
+    assert 'name="state" value="s1"' in shed.text and 'name="redirect" value="/learn"' in shed.text
+    assert '<script src="/auth/static/signin.js" defer></script>' in shed.text

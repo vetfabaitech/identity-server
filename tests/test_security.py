@@ -114,3 +114,11 @@ def test_on_its_own_host_sign_out_returns_to_the_lms_not_to_itself() -> None:
     assert post_signout_target("/signout?done=1", s) == f"{LMS}/signout?done=1"
     assert post_signout_target(None, s) == f"{LMS}/"
     assert post_signout_target(f"{IDE}/x", s) == f"{IDE}/x"
+
+
+def test_csp_allows_the_service_s_own_script_and_nothing_else() -> None:
+    """The sign-in page's automatic retry (static/signin.js) needs script-src 'self'; inline and foreign scripts
+    stay blocked."""
+    csp = security_headers(settings())["Content-Security-Policy"]
+    assert "script-src 'self';" in csp
+    assert "unsafe-inline" not in csp

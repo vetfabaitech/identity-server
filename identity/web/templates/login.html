@@ -8,7 +8,7 @@
 </div>
 <p class="divider"><span>or</span></p>
 {% endif %}
-<form method="post" action="/auth/login" class="stack">
+<form method="post" action="/auth/login" class="stack" data-retry-budget-seconds="180">
   <input type="hidden" name="redirect" value="{{ redirect }}">
   <input type="hidden" name="state" value="{{ state }}">
   <label for="email">Email</label>
@@ -16,8 +16,10 @@
   <label for="password">Password</label>
   <input id="password" name="password" type="password" autocomplete="current-password" required {% if email %}autofocus{% endif %}>
   <button type="submit">Sign in</button>
+  <p class="notice" role="status" aria-live="polite" hidden></p>
 </form>
 {% if test_accounts %}
 <p class="aside"><a href="{{ picker_url }}">Use a test account</a></p>
 {% endif %}
 {% endblock %}
+{% block scripts %}<script src="/auth/static/signin.js" defer></script>{% endblock %}
