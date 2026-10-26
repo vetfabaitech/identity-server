@@ -85,7 +85,7 @@ async def oauth_callback(
     limit_key = [f"oauth:{ip}"]
     async with _pool(request).connection() as conn:
         limit, window = settings.rate_limit_attempts, settings.rate_limit_window_seconds
-        if await store.rate_limited(conn, limit_key, limit=limit, window_seconds=window):
+        if await store.rate_limited(conn, {limit_key[0]: limit}, window_seconds=window):
             return _fail(request, target, nonce, 429, _too_many(settings))
     if remembered is None or not state or not hmac.compare_digest(state.encode(), remembered.nonce.encode()):
         log.warning(

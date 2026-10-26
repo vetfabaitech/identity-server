@@ -160,12 +160,14 @@ async def audit(
 # --------------------------------------------------------------------------- rate limit (fixed window per key)
 
 
-async def rate_limited(conn: AsyncConnection[Any], keys: list[str], *, limit: int, window_seconds: int) -> bool:
+async def rate_limited(conn: AsyncConnection[Any], limits: dict[str, int], *, window_seconds: int) -> bool:
+    """Whether any counter in `limits` (key -> allowed failures) has reached its limit inside the window."""
     cur = await conn.execute(
-        """SELECT 1 FROM identity.signin_attempts
-            WHERE key = ANY(%s) AND count >= %s AND window_start > now() - make_interval(secs => %s)
+        """SELECT 1 FROM identity.signin_attempts a
+            JOIN unnest(%s::text[], %s::int[]) AS l(key, allowed) ON l.key = a.key
+            WHERE a.count >= l.allowed AND a.window_start > now() - make_interval(secs => %s)
             LIMIT 1""",
-        (keys, limit, window_seconds),
+        (list(limits), list(limits.values()), window_seconds),
     )
     return await cur.fetchone() is not None
 
@@ -182,5 +184,5 @@ async def record_failure(conn: AsyncConnection[Any], keys: list[str], *, window_
         )
 
 
-async def clear_failures(conn: AsyncConnection[Any], key: str) -> None:
-    await conn.execute("DELETE FROM identity.signin_attempts WHERE key = %s", (key,))
+async def clear_failures(conn: AsyncConnection[Any], keys: list[str]) -> None:
+    await conn.execute("DELETE FROM identity.signin_attempts WHERE key = ANY(%s)", (keys,))

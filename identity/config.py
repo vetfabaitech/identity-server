@@ -45,8 +45,16 @@ class Settings(BaseSettings):
     # without issuing another refresh token. Older reuse revokes the whole session.
     refresh_grace_seconds: int = Field(default=30, ge=0, le=120)
 
-    # Failed sign-ins allowed per email and per client address in one window.
+    # Failed sign-ins allowed in one window, three independent counters (load test 2026-10-26, finding 1):
+    # per account *and* client address (one person mistyping; the common case, and the one a stranger on another
+    # address cannot trip), per account from anywhere (caps the hashing one account can cost, and a slow lockout
+    # from a single address), and per client address across accounts (a password spray from one place). The address
+    # limit is high because a college sits behind one public address: 1,000 students at 3 sign-ins/s with 10 % of
+    # them mistyping once is 180 failures in 10 minutes; 500 keeps that clear while a spray of 500 guesses in
+    # 10 minutes, one per account, is still refused.
     rate_limit_attempts: int = Field(default=10, ge=3, le=100)
+    rate_limit_account_attempts: int = Field(default=50, ge=3, le=1000)
+    rate_limit_address_attempts: int = Field(default=500, ge=10, le=100_000)
     rate_limit_window_seconds: int = Field(default=600, ge=60, le=86_400)
 
     # Password checks running at once per process, and how long a sign-in waits for one before answering

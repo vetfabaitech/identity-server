@@ -46,21 +46,28 @@ async def test_rate_limit_counts_failures_per_key_inside_the_window(pool: AsyncC
     keys = ["email:limit@dev.vetfab.local", "ip:203.0.113.9"]
     async with pool.connection() as conn:
         for _ in range(3):
-            assert not await store.rate_limited(conn, keys, limit=3, window_seconds=600)
+            assert not await store.rate_limited(conn, dict.fromkeys(keys, 3), window_seconds=600)
             await store.record_failure(conn, keys, window_seconds=600)
-        assert await store.rate_limited(conn, keys, limit=3, window_seconds=600)
-        assert await store.rate_limited(conn, ["ip:203.0.113.9"], limit=3, window_seconds=600)
-        assert not await store.rate_limited(conn, ["ip:198.51.100.1"], limit=3, window_seconds=600)
+        assert await store.rate_limited(conn, dict.fromkeys(keys, 3), window_seconds=600)
+        assert await store.rate_limited(conn, {"ip:203.0.113.9": 3}, window_seconds=600)
+        assert not await store.rate_limited(conn, {"ip:203.0.113.9": 4}, window_seconds=600), (
+            "each key has its own limit"
+        )
+        assert not await store.rate_limited(conn, {"ip:198.51.100.1": 3}, window_seconds=600)
     with psycopg.connect(owner_url, autocommit=True) as owner:
         owner.execute(
             "UPDATE identity.signin_attempts SET window_start = now() - interval '11 minutes' WHERE key = ANY(%s)",
             (keys,),
         )
     async with pool.connection() as conn:
-        assert not await store.rate_limited(conn, keys, limit=3, window_seconds=600), "an old window no longer counts"
+        assert not await store.rate_limited(conn, dict.fromkeys(keys, 3), window_seconds=600), (
+            "an old window no longer counts"
+        )
         await store.record_failure(conn, keys, window_seconds=600)
-        assert not await store.rate_limited(conn, keys, limit=3, window_seconds=600), "the window restarted at 1"
-        await store.clear_failures(conn, keys[0])
+        assert not await store.rate_limited(conn, dict.fromkeys(keys, 3), window_seconds=600), (
+            "the window restarted at 1"
+        )
+        await store.clear_failures(conn, keys[:1])
     with psycopg.connect(owner_url) as owner:
         left = owner.execute("SELECT key FROM identity.signin_attempts WHERE key = ANY(%s)", (keys,)).fetchall()
     assert [r[0] for r in left] == ["ip:203.0.113.9"]

@@ -508,3 +508,66 @@ async def test_a_pool_timeout_is_answered_busy(
     assert page.status_code == 503 and page.headers["retry-after"] == "2" and "busy" in page.text.lower()
     assert renewal.status_code == 503 and renewal.headers["retry-after"] == "2"
     assert renewal.json() == {"error": "busy"}
+
+
+# --------------------------------------------------------------------------- failed sign-ins behind one address (load test 2026-10-26, finding 1)
+
+
+def client_from(app: object, address: str) -> httpx.AsyncClient:
+    transport = httpx.ASGITransport(app=app, client=(address, 4321))  # pyright: ignore[reportArgumentType]
+    return httpx.AsyncClient(transport=transport, base_url=ORIGIN, follow_redirects=False)
+
+
+async def test_other_peoples_typos_on_a_shared_address_do_not_lock_anyone_out(
+    settings: Settings, pool: AsyncConnectionPool, keys_dir: Path, login_url: str, make_user: Callable[..., User]
+) -> None:
+    """A college behind one public address: a dozen people mistype once; the next person with the right password
+    still gets in. The per-person limit counts failures per account and address, not per address alone."""
+    strict = make_settings(login_url, keys_dir, rate_limit_attempts=3)
+    others = [make_user(password=PASSWORD) for _ in range(12)]
+    person = make_user(password=PASSWORD)
+    async with client_for(build_app(strict, pool, keys_dir)) as client:
+        for other in others:
+            assert (await sign_in(client, other.email, password="nope nope nope")).status_code == 401
+        assert (await sign_in(client, person.email)).status_code == 303
+
+
+async def test_an_address_is_limited_once_it_fails_a_lot(
+    settings: Settings, pool: AsyncConnectionPool, keys_dir: Path, login_url: str, make_user: Callable[..., User]
+) -> None:
+    """The per-address limit still exists, much higher: a spray of wrong passwords across accounts from one address
+    is refused once it passes it, right password or not."""
+    strict = make_settings(login_url, keys_dir, rate_limit_address_attempts=10)
+    sprayed = [make_user(password=PASSWORD) for _ in range(10)]
+    person = make_user(password=PASSWORD)
+    async with client_for(build_app(strict, pool, keys_dir)) as client:
+        for target in sprayed:
+            assert (await sign_in(client, target.email, password="nope nope nope")).status_code == 401
+        assert (await sign_in(client, person.email)).status_code == 429
+
+
+async def test_failures_from_one_address_do_not_lock_the_account_elsewhere(
+    settings: Settings, pool: AsyncConnectionPool, keys_dir: Path, login_url: str, make_user: Callable[..., User]
+) -> None:
+    """Someone hammering an account from their own address cannot keep its owner out at home: the per-person limit
+    is per account and address. The account-wide limit still caps how much hashing one account can cost."""
+    strict = make_settings(login_url, keys_dir, rate_limit_attempts=3, rate_limit_account_attempts=4)
+    user = make_user(password=PASSWORD)
+    app = build_app(strict, pool, keys_dir)
+    async with (
+        client_from(app, "203.0.113.9") as attacker,
+        client_from(app, "203.0.113.10") as second_attacker,
+        client_from(app, "203.0.113.11") as third_attacker,
+        client_from(app, "198.51.100.7") as owner,
+    ):
+        for _ in range(3):
+            assert (await sign_in(attacker, user.email, password="nope nope nope")).status_code == 401
+        assert (await sign_in(attacker, user.email)).status_code == 429
+        # The owner's success clears the account's counter, not the attacker's per-address one.
+        assert (await sign_in(owner, user.email)).status_code == 303
+        assert (await sign_in(attacker, user.email)).status_code == 429
+        for _ in range(3):
+            assert (await sign_in(second_attacker, user.email, password="nope nope nope")).status_code == 401
+        assert (await sign_in(third_attacker, user.email, password="nope nope nope")).status_code == 401
+        # Four failures against the account from anywhere since the last success: now everyone waits for the window.
+        assert (await sign_in(owner, user.email)).status_code == 429

@@ -39,7 +39,7 @@ Sessions: the refresh token lives in an HttpOnly cookie on `Path=/auth`, is stor
 | `KEYS_DIR` | One `<kid>.pem` per key; the newest signs, all are published |
 | `ACCESS_TOKEN_SECONDS` | 900 (at most 900) |
 | `REFRESH_TOKEN_DAYS`, `REFRESH_GRACE_SECONDS` | 30 days, 30 seconds |
-| `RATE_LIMIT_ATTEMPTS`, `RATE_LIMIT_WINDOW_SECONDS` | 10 failures per 600 seconds |
+| `RATE_LIMIT_ATTEMPTS`, `RATE_LIMIT_ACCOUNT_ATTEMPTS`, `RATE_LIMIT_ADDRESS_ATTEMPTS`, `RATE_LIMIT_WINDOW_SECONDS` | Failed sign-ins allowed per 600 seconds: 10 per account and client address (one person), 50 per account from anywhere, 500 per client address across accounts (a college behind one public address; see the load test report) |
 | `MAX_CONCURRENT_VERIFIES`, `VERIFY_QUEUE_SECONDS` | 2 password checks at once per process (64 MiB each), and a 3-second wait for one before sign-in answers 503 busy with `Retry-After: 2` |
 | `DB_WAIT_SECONDS` | 30: how long a request waits for a pooled database connection before answering 503 busy with `Retry-After: 2` (reached only by a storm of renewals; sign-ins are bounded before they touch the pool) |
 | `TEST_ACCOUNTS` | `true` enables the picker; refused in production |

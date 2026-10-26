@@ -145,8 +145,14 @@ async def login(request: Request) -> Response:
     password = form.get("password", "")
     target, nonce = post_signin_target(form.get("redirect"), settings), valid_state(form.get("state"))
     ip, agent = _client(request)
-    keys = [f"email:{store.normalise_email(email)}", f"ip:{ip}"]
-    limit, window = settings.rate_limit_attempts, settings.rate_limit_window_seconds
+    account = f"email:{store.normalise_email(email)}"
+    # Three counters (config.py): this person, this account from anywhere, this address across accounts.
+    limits = {
+        f"{account}|ip:{ip}": settings.rate_limit_attempts,
+        account: settings.rate_limit_account_attempts,
+        f"ip:{ip}": settings.rate_limit_address_attempts,
+    }
+    keys, window = list(limits), settings.rate_limit_window_seconds
     # The whole sign-in runs under a process-wide bound (perf design §10; load test 2026-10-26): each password check
     # takes 64 MiB, and a pooled connection held for its duration starved every other request. The bound is taken
     # before the first database access, so a burst of sign-ins never contends for the pool either: at most this many
@@ -160,7 +166,7 @@ async def login(request: Request) -> Response:
         return busy_page(request, target, nonce, email)
     try:
         async with _pool(request).connection() as conn:
-            if await store.rate_limited(conn, keys, limit=limit, window_seconds=window):
+            if await store.rate_limited(conn, limits, window_seconds=window):
                 return _login_page(request, target, nonce, 429, _too_many(settings), email)
             user = await store.find_user_by_email(conn, email) if email else None
         # The hash runs without a database connection.
@@ -178,7 +184,8 @@ async def login(request: Request) -> Response:
                     conn, "signin_failed", user_id=user.id, ip=ip, user_agent=agent, metadata={"reason": user.status}
                 )
                 return _login_page(request, target, nonce, 403, INACTIVE, email)
-            await store.clear_failures(conn, keys[0])
+            # A successful sign-in clears this person's and the account's counters, never the address's.
+            await store.clear_failures(conn, keys[:2])
             await store.touch_login(conn, user.id)
             raw = await sessions.issue(conn, user, settings, agent)
             await store.audit(conn, "signin", user_id=user.id, ip=ip, user_agent=agent)
@@ -337,12 +344,12 @@ async def unlock_test_accounts(request: Request) -> Response:
     expected = settings.test_accounts_passphrase.get_secret_value() if settings.test_accounts_passphrase else ""
     async with _pool(request).connection() as conn:
         limit, window = settings.rate_limit_attempts, settings.rate_limit_window_seconds
-        if await store.rate_limited(conn, key, limit=limit, window_seconds=window):
+        if await store.rate_limited(conn, {key[0]: limit}, window_seconds=window):
             return _picker_page(request, target, nonce, None, 429, _too_many(settings))
         if not hmac.compare_digest(form.get("passphrase", "").encode(), expected.encode()):
             await store.record_failure(conn, key, window_seconds=window)
             return _picker_page(request, target, nonce, None, 401, WRONG_PASSPHRASE)
-        await store.clear_failures(conn, key[0])
+        await store.clear_failures(conn, key)
     response = RedirectResponse(_picker_url(target, nonce), status_code=303)
     cookies.set_cookie(
         response, cookies.TEST_PASS, cookies.test_pass_value(settings), settings, cookies.TEST_PASS_SECONDS
