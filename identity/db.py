@@ -18,12 +18,16 @@ async def _configure(conn: AsyncConnection[Any]) -> None:
     await conn.commit()
 
 
-async def open_pool(url: str, *, min_size: int = 1, max_size: int = 10) -> AsyncConnectionPool[Any]:
+async def open_pool(
+    url: str, *, min_size: int = 1, max_size: int = 10, wait_seconds: float = 30.0
+) -> AsyncConnectionPool[Any]:
     # `check`: a connection is tested on checkout, so a restarted database does not fail the next sign-in.
+    # `wait_seconds`: how long a request waits for a connection; past it the request is answered busy (web/app.py).
     pool: AsyncConnectionPool[Any] = AsyncConnectionPool(
         url,
         min_size=min_size,
         max_size=max_size,
+        timeout=wait_seconds,
         open=False,
         configure=_configure,
         check=AsyncConnectionPool.check_connection,

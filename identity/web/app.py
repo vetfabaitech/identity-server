@@ -13,13 +13,13 @@ from pathlib import Path
 from fastapi import FastAPI, Request, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from psycopg_pool import AsyncConnectionPool
+from psycopg_pool import AsyncConnectionPool, PoolTimeout
 
 from identity.config import Settings, get_settings
 from identity.db import login_problems, open_pool
 from identity.keys import KeyRing, NoSigningKeyError, generate_key
 from identity.web.oauth_routes import router as oauth_router
-from identity.web.routes import router
+from identity.web.routes import busy_response, router
 from identity.web.security import BodyLimit, security_headers
 
 log = logging.getLogger("identity")
@@ -46,7 +46,7 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         owned = app.state.pool is None
         if owned:
-            app.state.pool = await open_pool(settings.database_url)
+            app.state.pool = await open_pool(settings.database_url, wait_seconds=settings.db_wait_seconds)
         try:
             async with app.state.pool.connection() as conn:
                 problems = await login_problems(conn)
@@ -78,6 +78,12 @@ def create_app(
         return response
 
     app.add_middleware(BodyLimit)
+
+    async def pool_timeout(request: Request, exc: Exception) -> Response:
+        log.warning("no database connection within the pool timeout: %s %s", request.method, request.url.path)
+        return busy_response(request)
+
+    app.add_exception_handler(PoolTimeout, pool_timeout)
     app.include_router(router)
     app.include_router(oauth_router)
     app.mount("/auth/static", StaticFiles(directory=HERE / "static"), name="static")

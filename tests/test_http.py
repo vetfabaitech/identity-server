@@ -454,3 +454,57 @@ async def test_no_connection_is_held_while_hashing(
         await single.close()
     assert page.status_code == 200
     assert waited < 1.0, waited
+
+
+async def test_a_burst_larger_than_the_pool_never_answers_500(
+    settings: Settings,
+    login_url: str,
+    keys_dir: Path,
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Load test 2026-10-26: 1,000 people signing in at once on one core queued on the connection pool for its
+    30-second timeout and were answered 500. Sign-ins may only touch the pool under a verify slot, so the pool is
+    never contended by more than `max_concurrent_verifies` requests: a burst is answered 303 or busy, never 500."""
+    import asyncio
+
+    from identity.db import open_pool
+
+    users = [make_user(password=PASSWORD) for _ in range(60)]
+    _slow_verify(monkeypatch, 0.05)
+    single = await open_pool(login_url, max_size=1, wait_seconds=0.1)
+    try:
+        async with client_for(build_app(settings, single, keys_dir)) as c:
+            responses = await asyncio.gather(*(sign_in(c, u.email) for u in users))
+    finally:
+        await single.close()
+    statuses = {r.status_code for r in responses}
+    assert statuses <= {303, 503} and 303 in statuses, statuses
+    assert all(r.headers["retry-after"] == "2" for r in responses if r.status_code == 503)
+
+
+async def test_a_pool_timeout_is_answered_busy(
+    settings: Settings, pool: AsyncConnectionPool, keys_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A database too slow to hand out a connection is an overload, not a bug: 503 with Retry-After on every route,
+    HTML on the pages and JSON on the renewal endpoint, never a 500 with a traceback."""
+    from contextlib import asynccontextmanager
+
+    from psycopg_pool import PoolTimeout
+
+    @asynccontextmanager
+    async def exhausted(*args: object, **kwargs: object) -> AsyncIterator[None]:
+        raise PoolTimeout("couldn't get a connection")
+        yield
+
+    monkeypatch.setattr(pool, "connection", exhausted)
+    async with client_for(build_app(settings, pool, keys_dir)) as c:
+        page = await c.post(
+            "/auth/login", data={"email": "a@b.test", "password": PASSWORD, "redirect": "/learn"}, headers=SAME_ORIGIN
+        )
+        renewal = await c.post(
+            "/auth/session/token", headers={"origin": ORIGIN, "cookie": f"{REFRESH}=not-a-real-token"}
+        )
+    assert page.status_code == 503 and page.headers["retry-after"] == "2" and "busy" in page.text.lower()
+    assert renewal.status_code == 503 and renewal.headers["retry-after"] == "2"
+    assert renewal.json() == {"error": "busy"}

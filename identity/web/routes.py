@@ -147,45 +147,65 @@ async def login(request: Request) -> Response:
     ip, agent = _client(request)
     keys = [f"email:{store.normalise_email(email)}", f"ip:{ip}"]
     limit, window = settings.rate_limit_attempts, settings.rate_limit_window_seconds
-    async with _pool(request).connection() as conn:
-        if await store.rate_limited(conn, keys, limit=limit, window_seconds=window):
-            return _login_page(request, target, nonce, 429, _too_many(settings), email)
-        user = await store.find_user_by_email(conn, email) if email else None
-    # The hash runs without a database connection and under a process-wide bound (perf design §10): each check
-    # takes 64 MiB, and a pooled connection held for its duration starved every other request. Unknown emails
-    # still hash (against a dummy) under the same bound, so timing does not reveal which emails exist.
+    # The whole sign-in runs under a process-wide bound (perf design §10; load test 2026-10-26): each password check
+    # takes 64 MiB, and a pooled connection held for its duration starved every other request. The bound is taken
+    # before the first database access, so a burst of sign-ins never contends for the pool either: at most this many
+    # sign-ins touch the database at once, and everyone else is told to try again shortly. Unknown emails still hash
+    # (against a dummy) under the same bound, so timing does not reveal which emails exist.
     slots: asyncio.Semaphore = request.app.state.verify_slots
     try:
         async with asyncio.timeout(settings.verify_queue_seconds):
             await slots.acquire()
     except TimeoutError:
-        busy = _login_page(request, target, nonce, 503, BUSY, email)
-        busy.headers["Retry-After"] = str(RETRY_AFTER_SECONDS)
-        return busy
+        return busy_page(request, target, nonce, email)
     try:
+        async with _pool(request).connection() as conn:
+            if await store.rate_limited(conn, keys, limit=limit, window_seconds=window):
+                return _login_page(request, target, nonce, 429, _too_many(settings), email)
+            user = await store.find_user_by_email(conn, email) if email else None
+        # The hash runs without a database connection.
         matched = await run_in_threadpool(verify_password, user.password_hash if user else None, password)
+        async with _pool(request).connection() as conn:
+            if user is None or not matched or len(password) > MAX_PASSWORD_LENGTH:
+                await store.record_failure(conn, keys, window_seconds=window)
+                await store.audit(
+                    conn, "signin_failed", user_id=user.id if user else None, ip=ip, user_agent=agent,
+                    metadata={"reason": "credentials"},
+                )  # fmt: skip
+                return _login_page(request, target, nonce, 401, INCORRECT, email)
+            if not user.active:
+                await store.audit(
+                    conn, "signin_failed", user_id=user.id, ip=ip, user_agent=agent, metadata={"reason": user.status}
+                )
+                return _login_page(request, target, nonce, 403, INACTIVE, email)
+            await store.clear_failures(conn, keys[0])
+            await store.touch_login(conn, user.id)
+            raw = await sessions.issue(conn, user, settings, agent)
+            await store.audit(conn, "signin", user_id=user.id, ip=ip, user_agent=agent)
     finally:
         slots.release()
-    async with _pool(request).connection() as conn:
-        if user is None or not matched or len(password) > MAX_PASSWORD_LENGTH:
-            await store.record_failure(conn, keys, window_seconds=window)
-            await store.audit(
-                conn, "signin_failed", user_id=user.id if user else None, ip=ip, user_agent=agent,
-                metadata={"reason": "credentials"},
-            )  # fmt: skip
-            return _login_page(request, target, nonce, 401, INCORRECT, email)
-        if not user.active:
-            await store.audit(
-                conn, "signin_failed", user_id=user.id, ip=ip, user_agent=agent, metadata={"reason": user.status}
-            )
-            return _login_page(request, target, nonce, 403, INACTIVE, email)
-        await store.clear_failures(conn, keys[0])
-        await store.touch_login(conn, user.id)
-        raw = await sessions.issue(conn, user, settings, agent)
-        await store.audit(conn, "signin", user_id=user.id, ip=ip, user_agent=agent)
     response = _handoff(request, user, target, nonce)
     cookies.set_refresh(response, raw, settings)
     return response
+
+
+def busy_page(request: Request, target: Target, state: str | None, email: str = "") -> HTMLResponse:
+    """503 with Retry-After: the sign-in form again, with a message asking for a moment."""
+    busy = _login_page(request, target, state, 503, BUSY, email)
+    busy.headers["Retry-After"] = str(RETRY_AFTER_SECONDS)
+    return busy
+
+
+def busy_response(request: Request) -> Response:
+    """Overload answer for any route when the database cannot hand out a connection in time (app.py): the same
+    503 and Retry-After as a full sign-in queue, as JSON for the renewal endpoint and as a page everywhere else."""
+    headers = {"Retry-After": str(RETRY_AFTER_SECONDS)}
+    if request.url.path.startswith("/auth/session/"):
+        cors = cors_headers(request, _settings(request)) or {}
+        return JSONResponse({"error": "busy"}, status_code=503, headers={**headers, **cors})
+    page = render(request, "message.html", 503, title="Sign-in is busy", message=BUSY)
+    page.headers.update(headers)
+    return page
 
 
 @router.post("/logout")

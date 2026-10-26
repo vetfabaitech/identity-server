@@ -41,6 +41,7 @@ Sessions: the refresh token lives in an HttpOnly cookie on `Path=/auth`, is stor
 | `REFRESH_TOKEN_DAYS`, `REFRESH_GRACE_SECONDS` | 30 days, 30 seconds |
 | `RATE_LIMIT_ATTEMPTS`, `RATE_LIMIT_WINDOW_SECONDS` | 10 failures per 600 seconds |
 | `MAX_CONCURRENT_VERIFIES`, `VERIFY_QUEUE_SECONDS` | 2 password checks at once per process (64 MiB each), and a 3-second wait for one before sign-in answers 503 busy with `Retry-After: 2` |
+| `DB_WAIT_SECONDS` | 30: how long a request waits for a pooled database connection before answering 503 busy with `Retry-After: 2` (reached only by a storm of renewals; sign-ins are bounded before they touch the pool) |
 | `TEST_ACCOUNTS` | `true` enables the picker; refused in production |
 | `TEST_ACCOUNTS_PASSPHRASE` | At least 12 characters; gates the picker |
 | `TEST_ACCOUNTS_EMAILS` | Comma-separated accounts the picker offers, in order |
@@ -110,6 +111,14 @@ volume: losing it signs everyone out, leaking it lets anyone forge sign-ins.
 
 Admin commands on the server:
 `docker compose -f deploy/compose.yml --env-file deploy/.env run --rm identity-admin <command>`.
+
+### Capacity
+
+Measured on 26 Oct 2026 ([docs/operations/load-test-2026-10-26.md](docs/operations/load-test-2026-10-26.md)): on
+2 vCPU the service sustains about 5 password sign-ins a second and over 200 token renewals a second; 1,000 people
+pressing "Sign in" in the same second all get in within 2½ minutes, seeing "busy, try again" in between. Sign-in is
+bounded by argon2id (two checks at once, 64 MiB each); everything past the bound is answered 503 with `Retry-After`,
+never an error. Rerun the tests with `load/` (its README).
 
 ### Connecting a product
 

@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     # 256 MiB container; unbounded checks were OOM-killed by 60 simultaneous sign-ins.
     max_concurrent_verifies: int = Field(default=2, ge=1, le=64)
     verify_queue_seconds: float = Field(default=3.0, ge=0.5, le=30)
+    # How long a request waits for a pooled database connection before it is answered 503 busy (web/app.py).
+    # Sign-ins never contend for the pool (routes.login takes a verify slot first), so this is reached only by a
+    # storm of renewals, which are cheap and best served late rather than refused: a product treats a refused
+    # renewal as a sign-out. Load test 2026-10-26: 1,000 renewals at once drain in ~22 s on one core.
+    db_wait_seconds: float = Field(default=30.0, ge=0.5, le=120)
 
     # Test-accounts mode (spec TD-9): a passphrase-gated page that signs in as one of the listed accounts.
     # Refused in production.
