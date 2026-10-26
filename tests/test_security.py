@@ -107,3 +107,10 @@ def test_on_its_own_host_identity_accepts_the_lms_sign_out_but_not_its_sign_in()
     own = request({"origin": "https://accounts.vetfab.ai", "sec-fetch-site": "same-origin"})
     assert same_origin(own, s)
     assert not same_origin(request({"origin": "https://accounts.vetfab.ai", "sec-fetch-site": "same-site"}), s)
+
+
+def test_on_its_own_host_sign_out_returns_to_the_lms_not_to_itself() -> None:
+    s = settings("staging", issuer="https://accounts.vetfab.ai/auth")
+    assert post_signout_target("/signout?done=1", s) == f"{LMS}/signout?done=1"
+    assert post_signout_target(None, s) == f"{LMS}/"
+    assert post_signout_target(f"{IDE}/x", s) == f"{IDE}/x"

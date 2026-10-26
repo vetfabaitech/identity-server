@@ -1,0 +1,22 @@
+# The identity host: /auth/* is the identity service; the bare host sends people to sign-in; nothing else exists.
+{$SITE_ADDRESS} {
+	{$SITE_TLS}
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+
+	handle /auth/* {
+		reverse_proxy identity:8200
+	}
+
+	handle / {
+		redir * /auth/login
+	}
+
+	handle {
+		respond 404
+	}
+}

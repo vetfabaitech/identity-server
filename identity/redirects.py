@@ -13,8 +13,17 @@ identity service's own line of defence, so it never echoes an attacker's URL int
 
 import re
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from identity.config import Settings
+
+
+def origin_of(url: str) -> str | None:
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return None
+    return f"{parts.scheme}://{parts.netloc}"
+
 
 MAX_REDIRECT_LENGTH = 2048
 MAX_STATE_LENGTH = 128
@@ -112,12 +121,19 @@ def valid_state(value: str | None) -> str | None:
 def post_signout_target(value: str | None, settings: Settings) -> str:
     """Where sign-out returns: a safe path on the default origin, or an absolute URL on another allowlisted origin.
 
-    Auth-flow paths are allowed here (the LMS returns to /signout?done=1).
+    Auth-flow paths are allowed here (the LMS returns to /signout?done=1). A bare path stays relative only while the
+    default origin is this service's own host (the test box layout); with the service on its own host it is made
+    absolute on the default origin, or the browser would resolve it against the identity host.
     """
+    default = settings.app_origin
+    relative_ok = default == origin_of(settings.issuer)
+
+    def on(origin: str, path: str) -> str:
+        return path if origin == default and relative_ok else f"{origin}{path}"
+
     if isinstance(value, str) and len(value) <= MAX_REDIRECT_LENGTH:
         for origin in settings.app_origin_list:
             rest = value[len(origin) :] if value.startswith(origin) else None
             if rest is not None and (rest == "" or rest.startswith("/")):
-                path = safe_path(rest or "/")
-                return path if origin == settings.app_origin else f"{origin}{path}"
-    return safe_path(value)
+                return on(origin, safe_path(rest or "/"))
+    return on(default, safe_path(value))

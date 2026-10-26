@@ -1,0 +1,87 @@
+# The identity service on its own host (docs/operations/three-deployments.md): sign-in for the LMS and the IDE at
+# PUBLIC_ORIGIN (e.g. https://accounts.vetfab.ai). Caddy terminates TLS and serves /auth/*; the database is
+# external (the shared Postgres). Run through infra/identity/deploy.sh, which migrates, provisions the service
+# login, makes sure a signing key exists and starts everything.
+name: vetfab-identity
+
+x-restart: &restart
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+x-identity-env: &identity-env
+  IDENTITY_ENVIRONMENT: ${IDENTITY_ENVIRONMENT:?}
+  # The service login (member of identity_app only), never the owner.
+  IDENTITY_DATABASE_URL: ${IDENTITY_DATABASE_URL:?}
+  IDENTITY_ISSUER: ${PUBLIC_ORIGIN:?}/auth
+  IDENTITY_AUDIENCE: vetfab
+  # The LMS first: a sign-in with a plain path lands there. Then the IDE.
+  IDENTITY_APP_ORIGINS: ${LMS_ORIGIN:?},${IDE_ORIGIN:?}
+  IDENTITY_GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+  IDENTITY_GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+  IDENTITY_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+  IDENTITY_GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+  IDENTITY_ADMIN_EMAILS: ${ADMIN_EMAILS:-}
+  IDENTITY_TEST_ACCOUNTS: ${TEST_ACCOUNTS:-false}
+  IDENTITY_TEST_ACCOUNTS_PASSPHRASE: ${TEST_ACCOUNTS_PASSPHRASE:-}
+  IDENTITY_TEST_ACCOUNTS_EMAILS: ${TEST_ACCOUNTS_EMAILS:-}
+  IDENTITY_TEST_ACCOUNTS_PASSWORD: ${TEST_ACCOUNTS_PASSWORD:-}
+
+services:
+  caddy:
+    <<: *restart
+    image: caddy:2.10.2
+    ports: ["${HTTP_PORT:-80}:80", "${HTTPS_PORT:-443}:443", "${HTTPS_PORT:-443}:443/udp"]
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?}
+      SITE_TLS: ${SITE_TLS:?}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      identity: { condition: service_healthy }
+
+  identity:
+    <<: *restart
+    build: { context: ../.., dockerfile: apps/identity/Dockerfile }
+    image: vetfab-identity:standalone
+    environment: *identity-env
+    volumes: ["identity-keys:/keys"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    mem_limit: 256m
+
+  # One-shot jobs (deploy.sh). Migrations run as the schema owner; nothing else gets that login.
+  migrate:
+    image: vetfab-identity:standalone
+    profiles: ["ops"]
+    environment:
+      IDENTITY_DATABASE_URL: ${OWNER_DATABASE_URL:?}
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    command: ["alembic", "upgrade", "head"]
+
+  provision:
+    image: postgres:17-alpine
+    profiles: ["ops"]
+    environment:
+      OWNER_DATABASE_URL: ${OWNER_DATABASE_URL:?}
+      IDENTITY_DB_USER: ${IDENTITY_DB_USER:-lms_identity}
+      IDENTITY_DB_PASSWORD: ${IDENTITY_DB_PASSWORD:?}
+    volumes: ["./provision-role.sql:/provision-role.sql:ro"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    entrypoint: ["sh", "-c", 'psql "$${OWNER_DATABASE_URL}" -v ON_ERROR_STOP=1 -q -f /provision-role.sql']
+
+  identity-admin:
+    image: vetfab-identity:standalone
+    profiles: ["ops"]
+    environment: *identity-env
+    volumes: ["identity-keys:/keys"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    entrypoint: ["identity-admin"]
+
+volumes:
+  # The signing keys. Back this volume up: losing it signs everyone out, leaking it lets anyone forge sign-ins.
+  identity-keys:
+  caddy-data:
+  caddy-config:
