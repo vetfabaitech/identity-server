@@ -9,6 +9,7 @@ How to measure what the identity service can take, on a laptop, against the same
 | `seed.py` | 1000 approved accounts `load-NNNN@load.vetfab.local` with one password, and a live refresh session each (JSON) |
 | `k6/identity.js` | The scenarios, chosen with `SCENARIO` (below) |
 | `watch.sh` | Samples the container's CPU, memory, restarts and OOM kills every 2 s |
+| `memory.sh` | Samples where the container's memory goes every 2 s: cgroup total, anonymous and file pages, the process's RSS and threads |
 | `timeline.py` | Turns k6's CSV output into a per-interval table of attempts by status and their latency |
 
 ## Set up (once)

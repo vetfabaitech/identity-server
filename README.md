@@ -114,11 +114,12 @@ Admin commands on the server:
 
 ### Capacity
 
-Measured on 26 Oct 2026 ([docs/operations/load-test-2026-10-26.md](docs/operations/load-test-2026-10-26.md)): on
-2 vCPU the service sustains about 5 password sign-ins a second and over 200 token renewals a second; 1,000 people
-pressing "Sign in" in the same second all get in within 2½ minutes, seeing "busy, try again" in between. Sign-in is
-bounded by argon2id (two checks at once, 64 MiB each); everything past the bound is answered 503 with `Retry-After`,
-never an error. Rerun the tests with `load/` (its README).
+Measured on 26–27 Oct 2026 ([docs/operations/load-test-2026-10-26.md](docs/operations/load-test-2026-10-26.md)):
+on 2 vCPU the service sustains about 5 password sign-ins a second and over 200 token renewals a second; 1,000 people
+pressing "Sign in" in the same second all get in within 2½ minutes, the page retrying on its own in between. Sign-in
+is bounded by argon2id (two checks at once, about 100 MiB each with their threads, 50 MiB base: 512 MiB in
+`deploy/`); everything past the bound is answered 503 with `Retry-After`, never an error. Rerun the tests with
+`load/` (its README).
 
 ### Connecting a product
 
