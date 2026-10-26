@@ -74,7 +74,7 @@ OAuth apps: register `https://auth.vetfab.ai/auth/oauth/github/callback` on the 
 
 Database order on a fresh database: the IDE's SQL files (including `supabase_migration_shared_identity.sql`) → the
 identity service's migrations → the LMS API's migrations → `infra/test/provision-roles.sql`.
-The LMS repo's `scripts/rehearse-shared-identity-db.sh` replays this on a throwaway database first.
+Rehearse the order on a throwaway database before touching the shared one.
 
 ### LMS (`apps/web` + `apps/api`, `test.vetfab.ai`)
 
@@ -146,7 +146,7 @@ refuses to run until `public.users` exists). The LMS test box's seeding needs a 
 
 ## 5. Order of the switch
 
-1. Database: rehearse with `scripts/rehearse-shared-identity-db.sh`, then run the IDE's
+1. Database: rehearse the migration order on a throwaway database, then run the IDE's
    `supabase_migration_shared_identity.sql` on Supabase (handover §4.1). The identity migrations run from `deploy.sh`.
 2. Identity: DNS for `auth.vetfab.ai`, then `deploy/deploy.sh`. Register
    `https://auth.vetfab.ai/auth/oauth/github/callback` on the GitHub OAuth app (and the Google one). Check
