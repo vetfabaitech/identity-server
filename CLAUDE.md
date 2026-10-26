@@ -19,6 +19,7 @@ same filesystem, and never import a product's code.
 - `deploy/` is the production/staging deployment (Caddy + the service, external Postgres): `deploy.sh` is idempotent.
 - `dev/docker-compose.yml` is the local Postgres (port 54331).
 - `docs/operations/deploying.md` is the three-service deployment guide; `CONTRACT.md` is the contract.
+- `load/` is the k6 load test (seeder, scenarios, timeline); results and sizing in `docs/operations/load-test-2026-10-26.md`.
 
 ## Commands
 
