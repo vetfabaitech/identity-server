@@ -1,0 +1,13 @@
+line-length = 120
+target-version = "py312"
+src = [".", "identity"]
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "ASYNC"]
+ignore = ["E501", "S101"]  # long lines handled by the formatter; asserts are fine in tests
+
+[lint.per-file-ignores]
+"tests/**" = ["S", "B"]
+
+[format]
+quote-style = "double"

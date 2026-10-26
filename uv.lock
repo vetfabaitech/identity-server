@@ -708,30 +708,6 @@ wheels = [
 ]
 
 [[package]]
-name = "vetfab-authz"
-version = "0.1.0"
-source = { editable = "../../packages/authz" }
-dependencies = [
-    { name = "httpx" },
-    { name = "pyjwt", extra = ["crypto"] },
-    { name = "pyyaml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.9" },
-    { name = "pyyaml", specifier = ">=6.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pyright", specifier = ">=1.1.380" },
-    { name = "pytest", specifier = ">=8.3" },
-    { name = "pytest-asyncio", specifier = ">=0.24" },
-]
-
-[[package]]
 name = "vetfab-identity"
 version = "0.1.0"
 source = { editable = "." }
@@ -757,7 +733,6 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
-    { name = "vetfab-authz" },
 ]
 
 [package.metadata]
@@ -783,7 +758,6 @@ dev = [
     { name = "pytest", specifier = ">=8.3" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
     { name = "ruff", specifier = ">=0.6" },
-    { name = "vetfab-authz", editable = "../../packages/authz" },
 ]
 
 [[package]]

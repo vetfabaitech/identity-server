@@ -14,7 +14,7 @@ from identity.config import Settings
 from identity.keys import KeyRing
 from identity.passwords import verify_password
 from tests.conftest import make_settings
-from vetfab_authz.tokens import JwksKeyStore, JwksSource, TokenPolicy, TokenVerifier
+from tests.contract.verifier import JwksKeyStore, JwksSource, TokenPolicy, TokenVerifier
 
 
 @pytest.fixture

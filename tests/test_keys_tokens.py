@@ -1,4 +1,4 @@
-"""Signing keys and access tokens: every minted token passes the API's own verifier (packages/authz)."""
+"""Signing keys and access tokens: every minted token passes the LMS verifier copied in tests/contract (CONTRACT.md)."""
 
 import json
 import os
@@ -12,7 +12,7 @@ import pytest
 from identity.config import Settings
 from identity.keys import KeyRing, NoSigningKeyError, generate_key
 from identity.tokens import mint_access_token
-from vetfab_authz.tokens import JwksKeyStore, JwksSource, TokenPolicy, TokenVerifier
+from tests.contract.verifier import JwksKeyStore, JwksSource, TokenPolicy, TokenVerifier
 
 ISSUER = "https://test.vetfab.ai/auth"
 AUDIENCE = "vetfab"

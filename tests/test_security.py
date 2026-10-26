@@ -98,19 +98,19 @@ def test_an_unparseable_origin_is_refused_even_with_an_unparseable_issuer() -> N
 
 
 def test_on_its_own_host_identity_accepts_the_lms_sign_out_but_not_its_sign_in() -> None:
-    """Identity at accounts.vetfab.ai: the LMS (first app origin) is then a sibling like the IDE. Its sign-out form
+    """Identity at auth.vetfab.ai: the LMS (first app origin) is then a sibling like the IDE. Its sign-out form
     arrives same-site and must be accepted; a sign-in form posted from it must still be refused (login CSRF)."""
-    s = settings("staging", issuer="https://accounts.vetfab.ai/auth")
+    s = settings("staging", issuer="https://auth.vetfab.ai/auth")
     lms_post = request({"origin": LMS, "sec-fetch-site": "same-site"})
     assert same_origin(lms_post, s, allow_siblings=True)
     assert not same_origin(lms_post, s)
-    own = request({"origin": "https://accounts.vetfab.ai", "sec-fetch-site": "same-origin"})
+    own = request({"origin": "https://auth.vetfab.ai", "sec-fetch-site": "same-origin"})
     assert same_origin(own, s)
-    assert not same_origin(request({"origin": "https://accounts.vetfab.ai", "sec-fetch-site": "same-site"}), s)
+    assert not same_origin(request({"origin": "https://auth.vetfab.ai", "sec-fetch-site": "same-site"}), s)
 
 
 def test_on_its_own_host_sign_out_returns_to_the_lms_not_to_itself() -> None:
-    s = settings("staging", issuer="https://accounts.vetfab.ai/auth")
+    s = settings("staging", issuer="https://auth.vetfab.ai/auth")
     assert post_signout_target("/signout?done=1", s) == f"{LMS}/signout?done=1"
     assert post_signout_target(None, s) == f"{LMS}/"
     assert post_signout_target(f"{IDE}/x", s) == f"{IDE}/x"

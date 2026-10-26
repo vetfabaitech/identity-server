@@ -5,7 +5,7 @@ Revises: (none)
 
 * `public.users` is the identity service's table (ADR-0001: the LMS reads it only through `lms.current_identity()` and
   other SECURITY DEFINER functions). It is created only when absent: a database that already holds the LMS dev stub
-  (infra/local/postgres-init) or the IDE's users table keeps its rows and columns. This revision adds only the
+  (the LMS dev stub, a copy of which is tests/fixtures/lms-users-stub.sql) or the IDE's users table keeps its rows and columns. This revision adds only the
   columns the identity service owns (`password_hash`, `email_verified_at`, `last_login_at`), so its downgrade can
   never drop a column another service created.
 * `identity_app` (NOLOGIN, NOINHERIT, NOBYPASSRLS) is the role the service runs as (`SET ROLE identity_app`); the

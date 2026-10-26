@@ -3,7 +3,7 @@
 `same_origin` ports apps/web/src/lib/auth/origin.ts: `Origin` must be present and be the identity service's own
 origin or the default app origin, with `Sec-Fetch-Site: same-origin` once deployed. Sign-out alone also accepts every
 IDENTITY_APP_ORIGINS entry on another host (the IDE; the LMS too when identity runs on its own host), which posts
-`same-site` by construction (spec SI-3, §4; docs/operations/three-deployments.md).
+`same-site` by construction (spec SI-3, §4; docs/operations/deploying.md).
 """
 
 from collections.abc import Awaitable, Callable, MutableMapping

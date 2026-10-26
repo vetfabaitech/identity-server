@@ -25,12 +25,11 @@ if TYPE_CHECKING:
     from identity.store import User
 
 IDENTITY_DIR = Path(__file__).resolve().parent.parent
-REPO_DIR = IDENTITY_DIR.parent.parent
-LMS_USERS_STUB = REPO_DIR / "infra/local/postgres-init/01-identity-users-stub.sql"
+LMS_USERS_STUB = IDENTITY_DIR / "tests/fixtures/lms-users-stub.sql"
 
 ADMIN_URL = os.environ.get(
     "IDENTITY_TEST_ADMIN_URL",
-    os.environ.get("LMS_TEST_ADMIN_URL", "postgresql://lms:lms-local-only@127.0.0.1:54329/lms"),
+    "postgresql://identity:identity-local-only@127.0.0.1:54331/identity",
 )
 LOGIN_ROLE = "identity_test_login"
 LOGIN_PASSWORD = "identity-test-only"  # noqa: S105  # local throwaway role
@@ -57,7 +56,7 @@ def require_database() -> None:
     if not database_available():
         if os.environ.get("IDENTITY_REQUIRE_DB") == "1":
             pytest.fail(f"Test database unreachable at {ADMIN_URL}")
-        pytest.skip("Postgres not reachable; run: docker compose -f infra/local/docker-compose.yml up -d")
+        pytest.skip("Postgres not reachable; run: docker compose -f dev/docker-compose.yml up -d")
 
 
 def alembic(url: str, *args: str) -> None:
@@ -83,7 +82,7 @@ def drop_database(name: str) -> None:
 
 
 def ensure_login(database: str) -> None:
-    """The service's login: NOINHERIT, member of identity_app only (docs/operations/runbooks/database-roles.md)."""
+    """The service's login: NOINHERIT, member of identity_app only (README.md, "Database")."""
     with psycopg.connect(db_url(database), autocommit=True) as conn:
         exists = conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (LOGIN_ROLE,)).fetchone()
         if exists is None:

@@ -1,0 +1,19 @@
+# Local Postgres for the tests and for running the service on a laptop. Port 54331, so it can run next to the LMS's
+# development database (54329). `docker compose -f dev/docker-compose.yml up -d`
+name: vetfab-identity-dev
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: identity
+      POSTGRES_PASSWORD: identity-local-only
+      POSTGRES_DB: identity
+    ports: ["127.0.0.1:54331:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U identity -d identity"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+volumes:
+  pgdata:

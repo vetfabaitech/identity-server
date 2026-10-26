@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: identity
+          POSTGRES_PASSWORD: identity-ci-only
+          POSTGRES_DB: identity
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U identity -d identity" --health-interval 2s --health-timeout 3s --health-retries 30
+    env:
+      IDENTITY_TEST_ADMIN_URL: postgresql://identity:identity-ci-only@localhost:5432/identity
+      IDENTITY_REQUIRE_DB: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Lint
+        run: uvx ruff@0.16.8 check . && uvx ruff@0.16.8 format --check .
+      - name: Type-check
+        run: uv run pyright
+      - name: Tests (tokens, contract, sessions, OAuth, HTTP, migrations)
+        run: uv run pytest -q
+
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t vetfab-identity:ci .

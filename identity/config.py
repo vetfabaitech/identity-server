@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     environment: Literal["development", "test", "staging", "production"]
 
     # psycopg URL for the service login: a member of `identity_app` and nothing else
-    # (docs/operations/runbooks/database-roles.md). Never the schema owner on a deployed host.
+    # (README.md, "Database"). Never the schema owner on a deployed host.
     database_url: str = Field(min_length=1)
 
     # `iss` stamped on access tokens, e.g. https://test.vetfab.ai/auth. The API's LMS_TOKEN_ISSUER must match.
@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     # Directory of RSA private keys, one `<kid>.pem` each; the newest signs, all are published (keys.py).
     keys_dir: Path
 
-    # Access-token lifetime. The API rejects anything longer than 900 s (packages/authz TokenPolicy).
+    # Access-token lifetime. Every product rejects anything longer than 900 s (CONTRACT.md).
     access_token_seconds: int = Field(default=900, ge=60, le=900)
     # Refresh session lifetime. Each use rotates the token; this bounds a session left alone.
     refresh_token_days: int = Field(default=30, ge=1, le=90)
@@ -130,7 +130,7 @@ class Settings(BaseSettings):
 
     def oauth_redirect_uri(self, provider: str) -> str:
         """The provider callback: always the mounted route /auth/oauth/<provider>/callback on the issuer's origin, so a
-        go-live issuer without the /auth suffix (https://accounts.vetfab.ai) still registers the right URL."""
+        go-live issuer without the /auth suffix (https://auth.vetfab.ai) still registers the right URL."""
         parts = urlsplit(self.issuer)
         return f"{parts.scheme}://{parts.netloc}/auth/oauth/{provider}/callback"
 

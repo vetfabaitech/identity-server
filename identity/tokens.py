@@ -1,4 +1,4 @@
-"""Access tokens in exactly the shape packages/authz verifies: RS256, `typ: at+jwt`, at most 15 minutes.
+"""Access tokens in exactly the shape CONTRACT.md fixes and every product verifies: RS256, `typ: at+jwt`, at most 15 minutes.
 
 Only `sub` carries meaning. Status, roles and organisations are never put in the token: the LMS re-reads them from
 the database on every request (plan §28, D-11 revised).

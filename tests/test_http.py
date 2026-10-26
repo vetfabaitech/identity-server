@@ -13,7 +13,7 @@ from identity.config import Settings
 from identity.keys import KeyRing
 from identity.store import User
 from tests.conftest import ORIGIN, PASSWORD, SAME_ORIGIN, build_app, client_for, make_settings
-from vetfab_authz.tokens import JwksKeyStore, JwksSource, TokenPolicy, TokenVerifier
+from tests.contract.verifier import JwksKeyStore, JwksSource, TokenPolicy, TokenVerifier
 
 pytestmark = [pytest.mark.db, pytest.mark.usefixtures("clear_attempts")]
 

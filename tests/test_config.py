@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 from pydantic import ValidationError
@@ -128,9 +129,10 @@ def test_default_ports_are_dropped_so_entries_match_browser_origins() -> None:
 
 
 @pytest.mark.parametrize(
-    "issuer", ["https://test.vetfab.ai/auth", "https://accounts.vetfab.ai", "https://accounts.vetfab.ai/auth/"]
+    "issuer", ["https://test.vetfab.ai/auth", "https://auth.vetfab.ai", "https://auth.vetfab.ai/auth/"]
 )
 def test_oauth_redirect_uri_follows_the_mounted_route(issuer: str) -> None:
     """The callback route is always /auth/oauth/<provider>/callback on the service's origin, whatever the issuer path."""
-    origin = issuer.split("/auth")[0].rstrip("/")
+    parts = urlsplit(issuer)
+    origin = f"{parts.scheme}://{parts.netloc}"
     assert make(issuer=issuer).oauth_redirect_uri("github") == f"{origin}/auth/oauth/github/callback"

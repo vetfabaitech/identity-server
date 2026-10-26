@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Deploys the identity service on its own host (docs/operations/three-deployments.md): build the image, migrate,
+# Deploys the identity service on its own host (README.md, "Deploy"): build the image, migrate,
 # provision the service login, make sure a signing key exists, start, check health. Idempotent: run after every
 # `git pull`.
 #
-#   infra/identity/deploy.sh            # on the server, with infra/identity/.env filled in from env.template
-#   infra/identity/deploy.sh --local    # on a laptop: https://localhost:9443 with Caddy's internal CA
+#   deploy/deploy.sh            # on the server, with deploy/.env filled in from env.template
+#   deploy/deploy.sh --local    # on a laptop: https://localhost:9443 with Caddy's internal CA
 #
-# ENV_FILE overrides where the settings are read from (default infra/identity/.env).
+# ENV_FILE overrides where the settings are read from (default deploy/.env).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 mode="${1:-server}"
 env_file="${ENV_FILE:-$here/.env}"
-[[ -f "$env_file" ]] || { echo "No settings file at $env_file. Copy infra/identity/env.template and fill it in." >&2; exit 1; }
+[[ -f "$env_file" ]] || { echo "No settings file at $env_file. Copy deploy/env.template and fill it in." >&2; exit 1; }
 
 # Every value compose requires (`${NAME:?}`) must be set.
 while read -r name; do
