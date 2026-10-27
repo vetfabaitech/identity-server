@@ -57,11 +57,13 @@ services:
     environment: *identity-env
     volumes: ["identity-keys:/keys"]
     extra_hosts: ["host.docker.internal:host-gateway"]
+    # Resource limits for this container (deploy/.env: IDENTITY_CPUS, IDENTITY_MEMORY_LIMIT; default 1 CPU, 4 GB).
     # Measured (docs/operations/load-test-2026-10-26.md): 50 MiB idle plus about 100 MiB per concurrent password
-    # check (64 MiB argon2id and its thread), so two checks peak at 232-245 MiB. 512 keeps a margin on a host where
-    # memory costs nothing extra; it does not make sign-in faster (that is CPU), and raising
-    # IDENTITY_MAX_CONCURRENT_VERIFIES needs ~100 MiB more per slot.
-    mem_limit: 512m
+    # check (64 MiB argon2id and its thread), so two checks peak at 232-245 MiB; 512 MB is enough, more is headroom.
+    # Sign-in speed is CPU-bound (argon2id), so extra memory does not make it faster, and raising
+    # IDENTITY_MAX_CONCURRENT_VERIFIES needs ~100 MiB more per slot and more CPU to be worth it.
+    cpus: ${IDENTITY_CPUS:-1}
+    mem_limit: ${IDENTITY_MEMORY_LIMIT:-4g}
 
   # One-shot jobs (deploy.sh). Migrations run as the schema owner; nothing else gets that login.
   migrate:
