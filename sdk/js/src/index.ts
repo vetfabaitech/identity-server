@@ -1,0 +1,10 @@
+export { createIdentityClient, IdentityClient } from "./client.js";
+export type { AuthSnapshot, AuthStatus, LoginOptions } from "./client.js";
+export { createHandoffClient, HandoffClient } from "./handoff.js";
+export type { HandoffOptions, HandoffSnapshot, HandoffStatus, ServiceInfo } from "./handoff.js";
+export { IdentityError, readClaims } from "./claims.js";
+export type { ErrorCode, IdentityClaims } from "./claims.js";
+export { IdentityConfigError } from "./config.js";
+export type { IdentityClientOptions } from "./config.js";
+export type { KeyValueStore, Platform } from "./platform.js";
+export { safeReturnPath } from "./redirects.js";

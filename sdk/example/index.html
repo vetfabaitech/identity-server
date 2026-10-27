@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Demo service</title>
+    <style>
+      body { font: 16px/1.5 system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; }
+      pre { background: #f2f2f2; padding: 0.75rem; overflow: auto; }
+      button { font: inherit; padding: 0.4rem 0.9rem; margin: 0 0.5rem 0.5rem 0; }
+      #switcher { margin: 1rem 0; }
+    </style>
+  </head>
+  <body>
+    <h1 id="title">Demo service</h1>
+    <p id="status">Checking your session…</p>
+    <p>
+      <button id="login" hidden>Sign in</button>
+      <button id="logout" hidden>Sign out</button>
+      <button id="me" hidden>GET /api/me</button>
+      <button id="note" hidden>POST /api/note</button>
+      <button id="admin" hidden>GET /api/admin</button>
+    </p>
+    <div id="switcher" hidden>
+      <strong>Open another Vetfab service</strong>
+      <div id="services"></div>
+    </div>
+    <p id="notice" role="status"></p>
+    <pre id="out"></pre>
+    <script type="module">
+      import { createHandoffClient, createIdentityClient } from "/sdk/index.js";
+
+      const $ = (id) => document.getElementById(id);
+      const config = await (await fetch("/config.json")).json();
+      document.title = $("title").textContent = config.serviceName;
+      const client = createIdentityClient({
+        authUrl: config.authUrl,
+        ...(config.sessionUrl ? { sessionUrl: config.sessionUrl, sessionLogoutUrl: config.sessionLogoutUrl } : {}),
+      });
+      const handoff = createHandoffClient(client);
+
+      function render() {
+        const { status, claims, error, mode } = client.getSnapshot();
+        $("status").textContent =
+          status === "authenticated" ? `Signed in as ${claims.sub} (${mode})`
+          : status === "error" ? `Problem: ${error.code}: ${error.message}`
+          : status === "unauthenticated" ? "Not signed in."
+          : "Checking your session…";
+        $("login").hidden = status === "authenticated" || status === "loading";
+        for (const id of ["logout", "me", "note", "admin"]) $(id).hidden = status !== "authenticated";
+        $("switcher").hidden = status !== "authenticated";
+      }
+      client.subscribe(render);
+
+      const call = async (path, method = "GET") => {
+        const response = await client.fetch(path, { method });
+        $("out").textContent = `${response.status} ${JSON.stringify(await response.json(), null, 2)}`;
+      };
+      $("login").onclick = () => client.login({ returnTo: "/" });
+      $("logout").onclick = () => client.logout({ returnTo: "/" });
+      $("me").onclick = () => call("/api/me");
+      $("note").onclick = () => call("/api/note", "POST");
+      $("admin").onclick = () => call("/api/admin");
+
+      async function showServices() {
+        try {
+          for (const service of await handoff.listAvailableServices()) {
+            const button = document.createElement("button");
+            button.textContent = `Open ${service.displayName}${service.environment === "production" ? "" : ` (${service.environment})`}`;
+            button.onclick = async () => {
+              button.disabled = true;
+              $("notice").textContent = `Opening ${service.displayName}…`;
+              try {
+                await handoff.createHandoff(service.id, { returnTo: "/" });
+              } catch (error) {
+                $("notice").textContent = `Could not open ${service.displayName}: ${error.code}`;
+                button.disabled = false;
+              }
+            };
+            $("services").append(button);
+          }
+        } catch {
+          $("notice").textContent = "The list of services is not available right now.";
+        }
+      }
+
+      if (client.isCallback()) {
+        try {
+          const { returnTo } = await client.handleCallback();
+          history.replaceState(null, "", returnTo);
+        } catch {
+          // render() shows the reason; the person can press Sign in again
+        }
+      } else {
+        await client.init();
+      }
+      render();
+      if (client.getSnapshot().status === "authenticated") await showServices();
+    </script>
+  </body>
+</html>
