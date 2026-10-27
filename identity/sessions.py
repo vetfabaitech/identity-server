@@ -110,6 +110,42 @@ async def renew(conn: AsyncConnection[Any], raw: str | None, settings: Settings,
     return Issued(user=user, refresh_token=await issue(conn, user, settings, user_agent, family_id=family_id))
 
 
+@dataclass(frozen=True, slots=True)
+class Peeked:
+    user: User
+    family_id: UUID
+
+
+async def peek(conn: AsyncConnection[Any], raw: str | None, settings: Settings) -> Peeked | Rejected:
+    """Who this refresh cookie belongs to, without using it: nothing rotates, nothing is revoked.
+
+    For read-only questions from a signed-in browser (which services may I open, start a hand-off). A token that is
+    rotated beyond the grace window is refused here, but only `renew` treats it as reuse and revokes the family.
+    """
+    if not raw or not _MIN_TOKEN_LENGTH <= len(raw) <= _MAX_TOKEN_LENGTH:
+        return Rejected("unknown")
+    cur = await conn.execute(
+        """SELECT family_id, user_id, revoked_at IS NOT NULL, rotated_at IS NOT NULL,
+                  rotated_at > now() - make_interval(secs => %s), expires_at <= now()
+             FROM identity.refresh_tokens WHERE token_hash = %s""",
+        (settings.refresh_grace_seconds, token_hash(raw)),
+    )
+    row = await cur.fetchone()
+    if row is None:
+        return Rejected("unknown")
+    family_id, user_id, revoked, rotated, in_grace, expired = row
+    if revoked:
+        return Rejected("revoked")
+    if rotated and not in_grace:
+        return Rejected("reuse")
+    if expired:
+        return Rejected("expired")
+    user = await store.get_user(conn, user_id)
+    if user is None or not user.active:
+        return Rejected("inactive")
+    return Peeked(user=user, family_id=family_id)
+
+
 async def revoke(conn: AsyncConnection[Any], raw: str | None, reason: RevokeReason) -> UUID | None:
     """Revokes the session the token belongs to; returns its user id, or None for an unknown token."""
     if not raw or not _MIN_TOKEN_LENGTH <= len(raw) <= _MAX_TOKEN_LENGTH:

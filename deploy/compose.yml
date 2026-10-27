@@ -16,8 +16,15 @@ x-identity-env: &identity-env
   IDENTITY_DATABASE_URL: ${IDENTITY_DATABASE_URL:?}
   IDENTITY_ISSUER: ${PUBLIC_ORIGIN:?}/auth
   IDENTITY_AUDIENCE: vetfab
-  # The LMS first: a sign-in with a plain path lands there. Then the IDE.
-  IDENTITY_APP_ORIGINS: ${LMS_ORIGIN:?},${IDE_ORIGIN:?}
+  # The LMS first: a sign-in with a plain path lands there. Then the IDE, then any further products (comma-separated).
+  IDENTITY_APP_ORIGINS: ${LMS_ORIGIN:?},${IDE_ORIGIN:?}${EXTRA_APP_ORIGINS:+,${EXTRA_APP_ORIGINS}}
+  # SSO hand-off (docs/sso-handoff.md): the service registry as JSON, with each service's secret hash. Empty: off.
+  IDENTITY_SERVICES: ${SERVICES_JSON:-}
+  IDENTITY_HANDOFF_TICKET_SECONDS: ${HANDOFF_TICKET_SECONDS:-60}
+  # The developer portal (docs/developer-portal.md): the registry lives in the database; these tune it.
+  IDENTITY_REGISTRY_REFRESH_SECONDS: ${REGISTRY_REFRESH_SECONDS:-5}
+  IDENTITY_SECRET_ROTATION_GRACE_SECONDS: ${SECRET_ROTATION_GRACE_SECONDS:-3600}
+  IDENTITY_ADMIN_RATE_LIMIT: ${ADMIN_RATE_LIMIT:-60}
   IDENTITY_GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
   IDENTITY_GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
   IDENTITY_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}

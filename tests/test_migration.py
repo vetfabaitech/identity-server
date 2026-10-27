@@ -90,6 +90,48 @@ def test_downgrade_removes_identity_objects_but_keeps_users(scratch: str) -> Non
     assert columns(url) == BASE_COLUMNS | IDENTITY_COLUMNS
 
 
+def test_0005_adds_the_registry_and_rolls_back_cleanly(scratch: str) -> None:
+    """The managed service registry: upgrade, data, rollback (which drops it and its audit rows), upgrade again."""
+    url = db_url(scratch)
+    alembic(url, "upgrade", "head")
+    assert tables(url) >= {"services", "developer_grants"}
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute(
+            """INSERT INTO identity.services (id, display_name, environment, base_url, secret_sha256)
+               VALUES ('svc', 'Svc', 'staging', 'https://svc.example', repeat('a', 64))"""
+        )
+        conn.execute("INSERT INTO identity.audit (action) VALUES ('service_created')")
+        with pytest.raises(psycopg.errors.UniqueViolation):  # one registration per address
+            conn.execute(
+                """INSERT INTO identity.services (id, display_name, environment, base_url, secret_sha256)
+                   VALUES ('svc2', 'Svc', 'staging', 'https://svc.example', repeat('b', 64))"""
+            )
+        with pytest.raises(psycopg.errors.CheckViolation):  # only a hash of 64 hex characters can be stored
+            conn.execute(
+                """INSERT INTO identity.services (id, display_name, environment, base_url, secret_sha256)
+                   VALUES ('svc3', 'Svc', 'staging', 'https://other.example', 'plaintext-secret')"""
+            )
+    alembic(url, "downgrade", "0004")
+    assert not tables(url) & {"services", "developer_grants"}
+    assert tables(url) >= {"handoff_tickets", "audit"}
+    with psycopg.connect(url) as conn:
+        assert conn.execute("SELECT count(*) FROM identity.audit WHERE action = 'service_created'").fetchone() == (0,)
+    alembic(url, "upgrade", "head")
+    assert tables(url) >= {"services", "developer_grants"}
+
+
+def test_the_service_role_can_register_and_disable_but_never_delete_a_service(database: str) -> None:
+    with _as_login(database) as conn:
+        conn.execute("SET ROLE identity_app")
+        conn.execute(
+            """INSERT INTO identity.services (id, display_name, environment, base_url, secret_sha256)
+               VALUES ('roletest', 'Role', 'local', 'http://localhost:9', repeat('c', 64))"""
+        )
+        conn.execute("UPDATE identity.services SET status = 'disabled' WHERE id = 'roletest'")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("DELETE FROM identity.services WHERE id = 'roletest'")
+
+
 def _as_login(database: str) -> psycopg.Connection[Any]:
     conn = psycopg.connect(db_url(database, user=LOGIN_ROLE, password=LOGIN_PASSWORD), autocommit=True)
     return conn
@@ -152,7 +194,16 @@ def test_every_identity_table_has_row_level_security(database: str) -> None:
                 WHERE c.relkind = 'r' AND ((n.nspname = 'identity' AND c.relname <> 'alembic_version')
                                            OR (n.nspname = 'public' AND c.relname = 'users'))"""
         ).fetchall()
-    assert {r[0] for r in rows} == {"refresh_tokens", "signin_attempts", "audit", "oauth_accounts", "users"}
+    assert {r[0] for r in rows} == {
+        "refresh_tokens",
+        "signin_attempts",
+        "audit",
+        "oauth_accounts",
+        "handoff_tickets",
+        "services",
+        "developer_grants",
+        "users",
+    }
     for name, rls, policies in rows:
         assert rls, f"{name} has RLS disabled"
         assert policies >= 1, f"{name} has no policy"

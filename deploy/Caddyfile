@@ -12,6 +12,16 @@
 		reverse_proxy identity:8200
 	}
 
+	# The developer portal's pages (static HTML and script; its API is under /auth/admin) and the page its sign-in
+	# returns to. Not exposed as a service: they carry no data and no credentials (docs/developer-portal.md).
+	handle /developer* {
+		reverse_proxy identity:8200
+	}
+
+	handle /handoff {
+		reverse_proxy identity:8200
+	}
+
 	handle / {
 		redir * /auth/login
 	}

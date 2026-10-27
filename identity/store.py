@@ -27,6 +27,19 @@ AuditAction = Literal[
     "oauth_signin",
     "oauth_linked",
     "admin_bootstrapped",
+    "handoff_issued",
+    "handoff_redeemed",
+    "handoff_rejected",
+    "service_created",
+    "service_updated",
+    "service_status_changed",
+    "service_secret_issued",
+    "service_secret_rotated",
+    "service_secret_revoked",
+    "service_bootstrapped",
+    "developer_granted",
+    "developer_revoked",
+    "admin_denied",
 ]
 Provider = Literal["github", "google"]
 

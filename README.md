@@ -11,6 +11,23 @@ Every route is under `/auth`. A sign-in ends with a 303 to `<product origin>/han
 Tokens carry only the user id: status, roles and organisations stay in each product, which re-reads them from the
 shared `users` table.
 
+Adding a product (backend + browser adapter, demo, localhost guide): [docs/adapter.md](docs/adapter.md). Moving a
+signed-in person between products without a second sign-in (one-time tickets, service registry, shared switcher):
+[docs/sso-handoff.md](docs/sso-handoff.md).
+
+| Route | Purpose |
+|---|---|
+| `GET /auth/services` | The services this person may open (registry, filtered by role). Credentialed CORS for registered origins |
+| `POST /auth/handoff` | A signed-in browser on a registered service gets a one-time ticket for another registered service |
+| `POST /auth/handoff/redeem` | The destination's backend trades a ticket for the person's identity (HTTP Basic: service id and secret) |
+
+Registering and managing services (a web page for administrators and delegated developers, persistent in the database, one-time
+secrets, validation, audit): [docs/developer-portal.md](docs/developer-portal.md), at `/developer/services` (API under `/auth/admin`).
+
+Settings: `IDENTITY_SERVICES` (JSON; now only a **seed** for the database registry), `IDENTITY_HANDOFF_TICKET_SECONDS` (default 60),
+`IDENTITY_REGISTRY_REFRESH_SECONDS` (5), `IDENTITY_SECRET_ROTATION_GRACE_SECONDS` (3600), `IDENTITY_ADMIN_RATE_LIMIT` (60). `identity-admin
+service-secret` makes a redemption secret and its registry hash.
+
 Deployment guide for all three services: [docs/operations/deploying.md](docs/operations/deploying.md). History: built
 in the LMS repo (`apps/identity`, design in its `docs/superpowers/specs/2026-10-15-*` and
 `2026-10-18-shared-identity-ide-lms-design.md`), moved here with its history on 26 Oct 2026.
