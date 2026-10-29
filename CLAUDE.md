@@ -19,6 +19,18 @@ same filesystem, and never import a product's code.
 - `deploy/` is the production/staging deployment (Caddy + the service, external Postgres): `deploy.sh` is idempotent.
 - `dev/docker-compose.yml` is the local Postgres (port 54331).
 - `docs/operations/deploying.md` is the three-service deployment guide; `CONTRACT.md` is the contract.
+- The service registry is in PostgreSQL (`registry_store.py`, `identity.services`, migration 0005) and managed by the developer
+  portal (`web/admin_routes.py` = every permission check, `web/static/developer/` = the page, `registry_cache.py`).
+  `IDENTITY_SERVICES` only seeds it and never overwrites a row. A service's origin joins the sign-in allowlist only while
+  **active**, and only an administrator activates: never let a developer path add a trusted origin. No `DELETE` on services,
+  ever (disable). Secrets are stored as hashes and shown once; never log, return or audit one. Docs: `docs/developer-portal.md`.
+- `services.py` (the service model and validation), `handoff.py` (one-time tickets: atomic single use, bound to
+  user, session and destination) and `web/handoff_routes.py` are the SSO hand-off (`docs/sso-handoff.md`). Tickets are
+  never access tokens and never in a URL or a log; keep it that way. A *seeded* registry `base_url` must also be in `APP_ORIGINS`; a managed one joins the allowlist when activated.
+- `sdk/` is the client adapter for products: `python/` (token verification, FastAPI guard, hand-off destination),
+  `js/` (browser client, hand-off client, React incl. `VetfabServiceSwitcher`), `example/` (a demo service, run twice for
+  the hand-off). They implement `CONTRACT.md` plus the hand-off routes; guides in `docs/adapter.md`, `docs/sso-handoff.md`. Python tests run with the
+  root `pytest`; JS: `cd sdk/js && npm ci && npm test`.
 - `load/` is the k6 load test (seeder, scenarios, timeline); results and sizing in `docs/operations/load-test-2026-10-26.md`.
 
 ## Commands

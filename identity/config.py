@@ -13,6 +13,8 @@ from urllib.parse import urlsplit
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from identity.services import Registry, RegistryError, parse_registry
+
 MIN_PASSPHRASE_LENGTH = 12
 
 
@@ -84,6 +86,26 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     google_client_secret: SecretStr | None = None
 
+    # True (the contract's behaviour): GET /auth/login with a live sign-in session hands a token straight back to the
+    # service that sent the person (single sign-on). False: it always shows the sign-in page, so the person chooses
+    # GitHub, Google (each with its own account picker) or a password for every service. Deploy sets False.
+    silent_sign_in: bool = True
+
+    # The trusted service registry (identity/services.py): which services may receive an SSO hand-off, and the hash of
+    # the secret each uses to redeem tickets. Empty switches hand-off off.
+    services: str = ""
+    # How long a hand-off ticket may wait to be redeemed. A ticket is single-use and bound to one destination.
+    handoff_ticket_seconds: int = Field(default=60, ge=10, le=300)
+    # How stale this instance's copy of the managed registry (and the sign-in origin allowlist built from it) may get.
+    # Handoff issue, redemption and the service list always read the database; only origin checks use the copy, so a
+    # change made on another instance reaches them within this many seconds (docs/developer-portal.md).
+    registry_refresh_seconds: float = Field(default=5.0, ge=0, le=60)
+    # After a service secret is rotated the previous one keeps working this long (0: revoked at once), so a service can
+    # deploy the new one without dropping handoffs. A rotation can also revoke the old one immediately.
+    secret_rotation_grace_seconds: int = Field(default=3600, ge=0, le=86_400)
+    # Mutations per administrator per rate-limit window on the developer portal API; secret operations get a sixth.
+    admin_rate_limit: int = Field(default=60, ge=6, le=1000)
+
     # Comma-separated emails that become approved administrators on OAuth sign-in (the IDE's BETA_ADMIN_EMAILS
     # bootstrap, spec SI-5/SI-7).
     admin_emails: str = ""
@@ -116,6 +138,10 @@ class Settings(BaseSettings):
                 raise ValueError("IDENTITY_ISSUER must use https outside development/test.")
             if any(not origin.startswith("https://") for origin in self.app_origin_list):
                 raise ValueError("IDENTITY_APP_ORIGINS must use https outside development/test.")
+        try:
+            parse_registry(self.services, app_origins=self.app_origin_list, deployed=self.deployed)
+        except RegistryError as exc:
+            raise ValueError(f"IDENTITY_SERVICES: {exc}") from exc
         if self.test_accounts:
             if self.environment == "production":
                 raise ValueError("IDENTITY_TEST_ACCOUNTS is refused in production.")
@@ -127,6 +153,10 @@ class Settings(BaseSettings):
             if not self.test_account_emails:
                 raise ValueError("IDENTITY_TEST_ACCOUNTS_EMAILS must list at least one account.")
         return self
+
+    @property
+    def registry(self) -> Registry:
+        return parse_registry(self.services, app_origins=self.app_origin_list, deployed=self.deployed)
 
     @property
     def app_origin_list(self) -> list[str]:

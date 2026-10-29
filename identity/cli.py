@@ -11,11 +11,14 @@ arguments, so they stay out of shell history and process listings.
     identity-admin token EMAIL                 # a 15-minute access token for scripts (content import)
     identity-admin seed-test-accounts          # IDENTITY_TEST_ACCOUNTS_PASSWORD on every listed test account
     identity-admin revoke-sessions EMAIL
+    identity-admin service-secret              # a hand-off redemption secret and its hash for IDENTITY_SERVICES
 """
 
 import argparse
 import asyncio
 import getpass
+import hashlib
+import secrets
 import sys
 from collections.abc import AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager
@@ -154,6 +157,13 @@ async def revoke_sessions(settings: Settings, args: argparse.Namespace) -> None:
     print(f"{revoked} session(s) of {user.email} signed out.")
 
 
+async def service_secret(_: Settings, __: argparse.Namespace) -> None:
+    """A redemption secret for a service and the hash that goes in IDENTITY_SERVICES. Touches no database."""
+    secret = secrets.token_urlsafe(32)
+    print(f"VETFAB_SERVICE_SECRET={secret}   # give to the service, keep it server-side")
+    print(f'"secret_sha256": "{hashlib.sha256(secret.encode()).hexdigest()}"   # goes in IDENTITY_SERVICES')
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="identity-admin", description="Vetfab identity service administration.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -178,6 +188,9 @@ def _parser() -> argparse.ArgumentParser:
     p.set_defaults(run=token)
     sub.add_parser("seed-test-accounts", help="set the test password on the listed test accounts").set_defaults(
         run=seed_test_accounts
+    )
+    sub.add_parser("service-secret", help="make a hand-off redemption secret and its registry hash").set_defaults(
+        run=service_secret
     )
     p = sub.add_parser("revoke-sessions", help="sign an account out everywhere")
     p.add_argument("email")

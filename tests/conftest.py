@@ -221,3 +221,18 @@ def build_app(settings: "Settings", pool: "AsyncConnectionPool", keys_dir: Path)
     from identity.web.app import create_app
 
     return create_app(settings, pool=pool, keys=KeyRing.load(keys_dir))
+
+
+@pytest.fixture(autouse=True)
+def _clean_registry(request: pytest.FixtureRequest) -> Iterator[None]:
+    """The registry and its tickets live in the shared test database and the environment seed never overwrites a row,
+    so every database test starts from an empty registry and seeds what it needs."""
+    if request.node.get_closest_marker("db") is None:
+        yield
+        return
+    owner_url = request.getfixturevalue("owner_url")
+    with psycopg.connect(owner_url, autocommit=True) as conn:
+        conn.execute("DELETE FROM identity.handoff_tickets")
+        conn.execute("DELETE FROM identity.services")
+        conn.execute("DELETE FROM identity.developer_grants")
+    yield
