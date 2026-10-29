@@ -116,6 +116,20 @@ describe("signing in and access", () => {
     expect(view(dev.root).queryByRole("link", { name: "Developers" })).toBeNull();
     expect(view(dev.root).getAllByRole("link", { name: "Register a service" }).length).toBeGreaterThan(0);
   });
+
+  it("gives every signed-in person a Sign out that posts to the identity logout and returns to the portal", async () => {
+    for (const me of [ME_ADMIN, ME_DEV]) {
+      document.body.replaceChildren();
+      const { root, started } = setup({ "GET /me": () => reply(me), "GET /services": () => reply(listing([])) });
+      await started;
+      const button = view(root).getByRole("button", { name: "Sign out" });
+      const form = button.closest("form")!;
+      expect(form.method).toBe("post");
+      const action = new URL(form.getAttribute("action")!, "https://auth.example");
+      expect(action.pathname).toBe("/auth/logout");
+      expect(new URL(action.searchParams.get("redirect")!).pathname).toBe("/developer/services");
+    }
+  });
 });
 
 describe("dashboard", () => {

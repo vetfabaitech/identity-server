@@ -179,7 +179,12 @@ export function mountPortal(root, env) {
         "header",
         { class: "top" },
         h("p", { class: "brand" }, "Vetfab ", h("span", {}, "Developer portal")),
-        h("p", { class: "who" }, state.me.user.email, " ", badge(state.me.is_admin ? "admin" : "dev", state.me.is_admin ? "Administrator" : "Developer")),
+        h(
+          "div",
+          { class: "account" },
+          h("p", { class: "who" }, state.me.user.email, " ", badge(state.me.is_admin ? "admin" : "dev", state.me.is_admin ? "Administrator" : "Developer")),
+          signOutForm(),
+        ),
       ),
       nav,
       main,
@@ -187,6 +192,17 @@ export function mountPortal(root, env) {
       dialogs,
     );
     shell = { nav, main, status, dialogs };
+  }
+
+  /** Sign out: a form POST to the identity service's /auth/logout (a link would be a GET, which it refuses), which
+   * revokes the session, clears the cookie and returns here, where the portal shows its sign-in screen. */
+  function signOutForm() {
+    const back = `${env.location.origin}/developer/services`;
+    return h(
+      "form",
+      { class: "signout", method: "post", action: `/auth/logout?redirect=${encodeURIComponent(back)}` },
+      h("button", { type: "submit", class: "btn" }, "Sign out"),
+    );
   }
 
   function signInScreen(text) {

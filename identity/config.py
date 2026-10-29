@@ -86,6 +86,11 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     google_client_secret: SecretStr | None = None
 
+    # True (the contract's behaviour): GET /auth/login with a live sign-in session hands a token straight back to the
+    # service that sent the person (single sign-on). False: it always shows the sign-in page, so the person chooses
+    # GitHub, Google (each with its own account picker) or a password for every service. Deploy sets False.
+    silent_sign_in: bool = True
+
     # The trusted service registry (identity/services.py): which services may receive an SSO hand-off, and the hash of
     # the secret each uses to redeem tickets. Empty switches hand-off off.
     services: str = ""

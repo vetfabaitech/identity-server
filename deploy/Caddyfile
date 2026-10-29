@@ -1,11 +1,25 @@
-# The identity host: /auth/* is the identity service; the bare host sends people to sign-in; nothing else exists.
+# The identity host: /auth/* is the identity service, plus the developer portal. The bare host and every other path are
+# a plain 404, and so is a direct visit to the sign-in page: it exists only for a person a service (the IDE, the LMS)
+# sends here with a `redirect`, so typing the host into a browser shows nothing and a signed-in visitor is never
+# bounced into a product. Nothing here is meant to be found by search engines.
 {$SITE_ADDRESS} {
 	{$SITE_TLS}
 	encode zstd gzip
 
 	header {
 		Strict-Transport-Security "max-age=31536000"
+		X-Robots-Tag "noindex, nofollow, noarchive"
 		-Server
+	}
+
+	# GET /auth/login without a `redirect` is a direct visit. (The password form POSTs to the same path; it is not matched.)
+	@bare_login {
+		method GET HEAD
+		path /auth/login
+		not query redirect=*
+	}
+	handle @bare_login {
+		respond "Not found" 404
 	}
 
 	handle /auth/* {
@@ -22,11 +36,7 @@
 		reverse_proxy identity:8200
 	}
 
-	handle / {
-		redir * /auth/login
-	}
-
 	handle {
-		respond 404
+		respond "Not found" 404
 	}
 }

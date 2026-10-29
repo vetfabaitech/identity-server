@@ -118,7 +118,10 @@ async def login_page(request: Request, redirect: str | None = None, state: str |
     settings = _settings(request)
     target, nonce = post_signin_target(redirect, settings), valid_state(state)
     raw = request.cookies.get(cookies.cookie_name(cookies.REFRESH, settings))
-    if not raw:
+    if not raw or not settings.silent_sign_in:
+        # No silent single sign-on: a service that sends someone here always gets the sign-in page (GitHub, Google,
+        # password), so the person picks the account for that service. An existing session is left alone; signing in
+        # replaces it.
         return _login_page(request, target, nonce)
     ip, agent = _client(request)
     async with _pool(request).connection() as conn:

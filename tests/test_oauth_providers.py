@@ -57,6 +57,7 @@ def test_github_authorize_url_carries_client_callback_scope_and_state() -> None:
     assert query["redirect_uri"] == "https://test.vetfab.ai/auth/oauth/github/callback"
     assert query["scope"] == "read:user user:email"
     assert query["state"] == "nonce-1"
+    assert query["prompt"] == "select_account"  # the account picker is always shown
 
 
 def test_google_authorize_url_asks_for_openid_email_profile() -> None:

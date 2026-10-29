@@ -40,6 +40,9 @@ class GitHub:
             "scope": SCOPES,
             "state": state,
             "allow_signup": "true",
+            # Always show GitHub's account picker, so a person with several GitHub accounts is not signed in as whichever
+            # one this browser last used (the same intent as Google's `select_account`).
+            "prompt": "select_account",
         }
         return f"{AUTHORIZE_URL}?{urlencode(query)}"
 

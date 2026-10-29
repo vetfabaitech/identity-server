@@ -62,6 +62,9 @@ pre code { border: 0; padding: 0; background: none; word-break: normal; }
 .brand { margin: 0; font-weight: 700; color: var(--primary); }
 .brand span { color: var(--fg); font-weight: 600; }
 .who { margin: 0; color: var(--fg-muted); }
+.account { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.signout { margin: 0; }
+.signout .btn { min-height: 32px; padding: 4px 12px; }
 nav[aria-label="Developer portal"] ul { display: flex; flex-wrap: wrap; gap: 4px 16px; list-style: none; padding: 0; margin: 12px 0; border-bottom: 1px solid var(--border); }
 nav[aria-label="Developer portal"] a { display: inline-block; padding: 8px 0; text-decoration: none; font-weight: 600; }
 main { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
