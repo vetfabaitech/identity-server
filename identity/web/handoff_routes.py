@@ -114,7 +114,7 @@ def _listing(service: Service) -> dict[str, str]:
 async def list_services(request: Request) -> Response:
     async with _pool(request).connection() as conn:
         peeked, cors, failure = await _session(request, conn)
-        registry: Registry = await registry_store.load_registry(conn)
+        registry: Registry = await registry_store.load_registry(conn, deployed=_settings(request).deployed)
     if failure is not None or peeked is None:
         return failure or _error(401, "unknown")
     current = registry.by_origin(request.headers.get("origin"))
@@ -130,7 +130,7 @@ async def create_handoff(request: Request) -> Response:
     settings = _settings(request)
     async with _pool(request).connection() as conn:
         peeked, cors, failure = await _session(request, conn)
-        registry: Registry = await registry_store.load_registry(conn)
+        registry: Registry = await registry_store.load_registry(conn, deployed=settings.deployed)
     if failure is not None or peeked is None or cors is None:
         return failure or _error(401, "unknown")
     source = registry.by_origin(request.headers.get("origin"))
@@ -190,7 +190,7 @@ async def create_handoff(request: Request) -> Response:
 async def redeem_handoff(request: Request) -> Response:
     credentials = _basic_credentials(request.headers.get("authorization"))
     async with _pool(request).connection() as conn:
-        registry: Registry = await registry_store.load_registry(conn)
+        registry: Registry = await registry_store.load_registry(conn, deployed=_settings(request).deployed)
     service = registry.authenticate(*credentials) if credentials else None
     if service is None:
         if credentials and _is_inactive_service(registry, *credentials):

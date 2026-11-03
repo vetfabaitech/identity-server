@@ -7,7 +7,7 @@ reach this module; it receives and stores SHA-256 hashes only.
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from uuid import UUID
 
@@ -77,9 +77,16 @@ async def list_all(conn: AsyncConnection[Any]) -> list[Service]:
     return [_service(row) for row in await cur.fetchall()]
 
 
-async def load_registry(conn: AsyncConnection[Any]) -> Registry:
-    """Every service, with its current status. `Registry`'s lookups only ever return the active ones."""
-    return Registry(tuple(await list_all(conn)))
+async def load_registry(conn: AsyncConnection[Any], *, deployed: bool = False) -> Registry:
+    """Every service, with its current status. `Registry`'s lookups only ever return the active ones.
+
+    On a deployed identity service a `local` (localhost development) service is never enabled here: it may receive a
+    sign-in through the origin allowlist (registry_cache.py) but is no hand-off source or target and cannot redeem.
+    """
+    services = await list_all(conn)
+    if deployed:
+        services = [replace(s, enabled=False) if s.environment == "local" else s for s in services]
+    return Registry(tuple(services))
 
 
 async def get(conn: AsyncConnection[Any], service_id: str) -> Service | None:

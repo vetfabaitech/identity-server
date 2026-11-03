@@ -9,6 +9,10 @@ The allowlist is `IDENTITY_APP_ORIGINS` plus the `base_url` of every **active** 
 `IDENTITY_REGISTRY_REFRESH_SECONDS` and straight after a change made on this instance. A service that is pending or
 disabled contributes nothing, so it can never be sent a token. The first refresh also seeds the database from
 `IDENTITY_SERVICES` (registry_store.bootstrap).
+
+On a deployed service an **active** `local` service joins the allowlist too, but only while
+`IDENTITY_ALLOW_LOCALHOST_DEV_ORIGINS` is on and its origin is still exactly a loopback `http://localhost:<port>`
+(checked again here, whatever the row says). Turning the setting off drops them all at the next refresh.
 """
 
 import asyncio
@@ -20,7 +24,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from identity import registry_store
 from identity.config import Settings
-from identity.services import Registry
+from identity.services import Registry, is_localhost_dev_origin
 
 log = logging.getLogger("identity")
 
@@ -35,10 +39,22 @@ class RegistryCache:
         self._seeded = False
         self._lock = asyncio.Lock()
         self.registry = Registry()
+        self.local_dev_services: dict[str, str] = {}  # trusted localhost development origin -> service id
 
     def _apply(self, registry: Registry) -> None:
         origins = list(self._env_origins)
         origins += [s.base_url for s in registry.services if s.enabled and s.base_url not in origins]
+        local = {
+            s.base_url: s.id
+            for s in registry.services
+            if self._settings.deployed
+            and self._settings.allow_localhost_dev_origins
+            and s.status == "active"
+            and s.environment == "local"
+            and is_localhost_dev_origin(s.base_url)
+        }
+        origins += [origin for origin in local if origin not in origins]
+        self.local_dev_services = local
         # Pydantic does not re-validate on assignment; the values are already normalised origins.
         self._settings.app_origins = ",".join(origins)
         self.registry = registry
@@ -53,7 +69,7 @@ class RegistryCache:
 
                     await store.audit(conn, "service_bootstrapped", metadata={"service": service_id})
                 self._seeded = True
-            self._apply(await registry_store.load_registry(conn))
+            self._apply(await registry_store.load_registry(conn, deployed=self._settings.deployed))
 
     async def refresh_if_stale(self, pool: AsyncConnectionPool[Any]) -> None:
         """Called at the start of every request. A failure keeps the previous copy and is retried after the interval."""

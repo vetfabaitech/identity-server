@@ -18,7 +18,8 @@ Who may do what (an account is "active": pending or approved, with a live sessio
 | rotate / revoke secrets | yes | own | no |
 | grant or revoke developers | yes | no | no |
 
-Activating is administrator-only on purpose: an active service's address joins the list of origins that are handed
+Activating is administrator-only on purpose (the one exception: a `local` service at exactly http://localhost:<port> or
+http://127.0.0.1:<port> is activated on registration while IDENTITY_ALLOW_LOCALHOST_DEV_ORIGINS is on): an active service's address joins the list of origins that are handed
 access tokens at sign-in, so whoever can activate can receive those tokens.
 
 Owner, status and role are never read from a request body: unknown fields are refused. Secrets are generated here,
@@ -27,6 +28,7 @@ stored only as SHA-256, shown once in the response that creates them, and never 
 
 import hashlib
 import ipaddress
+import logging
 import secrets
 import time
 from dataclasses import dataclass
@@ -48,6 +50,7 @@ from identity.web import cookies
 from identity.web.security import origin_of
 
 router = APIRouter(prefix="/auth/admin")
+log = logging.getLogger("identity")
 
 NO_CACHE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 CREATE_FIELDS = frozenset(
@@ -256,6 +259,15 @@ async def _refresh(request: Request) -> None:
     await request.app.state.registry_cache.refresh(_pool(request))
 
 
+def _local_dev(service: Service, settings: Settings) -> dict[str, Any]:
+    """Audit details marking a localhost development origin on a deployed identity service (empty otherwise)."""
+    return (
+        {"local_origin": True, "origin": service.base_url}
+        if settings.deployed and service.environment == "local"
+        else {}
+    )
+
+
 def _confirm(body: dict[str, Any], service: Service, *, required: bool) -> None:
     if (required or service.environment == "production") and body.get("confirm") != service.id:
         raise ApiError(400, "confirmation_required", {"expected": "the service id"})
@@ -306,7 +318,13 @@ async def _checks(
     """Everything a configuration must satisfy before it can be activated. Makes no network request of any kind."""
     checks: list[dict[str, str]] = []
     try:
-        fields = clean_fields(raw, deployed=settings.deployed, label="service", require_secret_hash=False)
+        fields = clean_fields(
+            raw,
+            deployed=settings.deployed,
+            label="service",
+            require_secret_hash=False,
+            allow_localhost_dev=settings.allow_localhost_dev_origins,
+        )
     except RegistryError as exc:
         return [_check("invalid_fields", "error", str(exc))], None
     checks.append(_check("fields", "ok", "Identifier, address, environment, paths and session length are well-formed."))
@@ -322,6 +340,17 @@ async def _checks(
     checks += _host_checks(fields)
     if fields["environment"] == "production":
         checks.append(_check("https", "ok", "Production address uses https."))
+    if settings.deployed and fields["environment"] == "local":
+        checks.append(
+            _check(
+                "localhost_dev",
+                "info",
+                "Localhost development origin: activated on registration, with no administrator step, and trusted for "
+                "sign-in redirects only while the identity service allows localhost development origins. "
+                "It gets a token per full-page sign-in "
+                "(GET /auth/login) and cannot renew silently, use the switcher or redeem hand-off tickets.",
+            )
+        )
     checks.append(
         _check(
             "protocol",
@@ -438,7 +467,20 @@ async def register_service(request: Request) -> Response:
             )  # fmt: skip
         except Conflict as exc:
             raise ApiError(409, "id_taken" if exc.field == "id" else "origin_taken") from None
-        await _audit(conn, "service_created", actor, service.id, environment=service.environment)
+        local = _local_dev(service, settings)
+        await _audit(conn, "service_created", actor, service.id, environment=service.environment, **local)
+        if local:
+            log.info("localhost development origin registered: service=%s origin=%s", service.id, service.base_url)
+            # No administrator step: validation has already limited this to http://localhost|127.0.0.1:<port>, which
+            # can only be the signed-in person's own machine, and only while IDENTITY_ALLOW_LOCALHOST_DEV_ORIGINS is on.
+            activated = await registry_store.set_status(conn, service.id, "active", actor.user.id)
+            assert activated is not None
+            await _audit(
+                conn, "service_status_changed", actor, service.id,
+                previous="pending", status="active", auto_approved=True, **local,
+            )  # fmt: skip
+            log.info("localhost development origin activated: service=%s origin=%s", service.id, service.base_url)
+            service = activated
         await _audit(conn, "service_secret_issued", actor, service.id, reason="registration")
         owners = {actor.user.id: actor.user.email}
         view = _view(service, actor, owners)
@@ -533,7 +575,12 @@ async def enable_service(request: Request, service_id: str) -> Response:
             raise ApiError(422, "validation_failed", {"checks": checks})
         updated = await registry_store.set_status(conn, service.id, "active", actor.user.id)
         assert updated is not None
-        await _audit(conn, "service_status_changed", actor, service.id, previous=service.status, status="active")
+        local = _local_dev(service, settings)
+        await _audit(
+            conn, "service_status_changed", actor, service.id, previous=service.status, status="active", **local
+        )
+        if local:
+            log.info("localhost development origin activated: service=%s origin=%s", service.id, service.base_url)
         owners = await registry_store.owner_emails(conn, {updated.owner_user_id} if updated.owner_user_id else set())
         view = _view(updated, actor, owners)
     await _refresh(request)

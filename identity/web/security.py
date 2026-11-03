@@ -47,7 +47,7 @@ def same_origin(request: Request, settings: Settings, *, allow_siblings: bool = 
     own = origin_of(settings.issuer)
     # The service's own pages, and the LMS while it shares the service's host (the test box layout), must post
     # same-origin once deployed. Any app origin on another host is a sibling (identity on its own host, or the IDE).
-    sibling = allow_siblings and sender in settings.app_origin_list and sender != own
+    sibling = allow_siblings and sender in settings.cors_origin_list and sender != own
     if sender in {own, settings.app_origin} and not sibling:
         allowed_sites = {"same-origin"} if settings.deployed else {"same-origin", "same-site"}
     elif sibling:
@@ -61,7 +61,7 @@ def same_origin(request: Request, settings: Settings, *, allow_siblings: bool = 
 def cors_headers(request: Request, settings: Settings) -> dict[str, str] | None:
     """Credentialed CORS headers for an allowlisted product origin, or None (spec SI-4 renewal)."""
     origin = request.headers.get("origin")
-    if not origin or origin not in settings.app_origin_list:
+    if not origin or origin not in settings.cors_origin_list:
         return None
     return {"Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true", "Vary": "Origin"}
 

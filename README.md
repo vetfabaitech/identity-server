@@ -66,6 +66,7 @@ Sessions: the refresh token lives in an HttpOnly cookie on `Path=/auth`, is stor
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub OAuth app; GitHub sign-in is offered only when both are set |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google OAuth client (type "Web application"); same rule |
 | `ADMIN_EMAILS` | Comma-separated; these accounts become approved administrators on GitHub or Google sign-in |
+| `ALLOW_LOCALHOST_DEV_ORIGINS` | `false` (default). `true` lets an administrator activate a `local` service at exactly `http://localhost:<port>` or `http://127.0.0.1:<port>`, so a developer can run a service on their machine against this deployed identity (sign-in redirect only: no CORS, no silent renewal, no hand-off). Refused in production. See [developer-portal.md](docs/developer-portal.md) §14 |
 
 ### OAuth callbacks to register
 

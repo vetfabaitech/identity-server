@@ -7,6 +7,7 @@ to a server or put in a Referer.
 
 import asyncio
 import hmac
+import logging
 from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID
@@ -30,6 +31,7 @@ from identity.web import cookies
 from identity.web.security import cors_headers, same_origin
 
 router = APIRouter(prefix="/auth")
+log = logging.getLogger("identity")
 
 INCORRECT = "Email or password is incorrect."
 INACTIVE = "This account is not active. Contact your Vetfab administrator."
@@ -105,6 +107,19 @@ def _handoff(request: Request, user: User, target: Target, state: str | None) ->
     return RedirectResponse(f"{target.handoff_base}#{fragment}", status_code=303)
 
 
+def local_signin_details(request: Request, target: Target) -> dict[str, Any]:
+    """Audit details when this sign-in lands on a localhost development origin (empty for every other target).
+
+    Logged here too, so an operator can see which developer machine was handed a token without reading the table.
+    """
+    cache = request.app.state.registry_cache
+    service = cache.local_dev_services.get(target.origin)
+    if service is None:
+        return {}
+    log.info("sign-in handed to localhost development origin: service=%s origin=%s", service, target.origin)
+    return {"service": service, "local_origin": True, "origin": target.origin}
+
+
 async def _form(request: Request) -> dict[str, str]:
     form = await request.form()
     return {k: v for k, v in form.items() if isinstance(v, str)}
@@ -127,7 +142,10 @@ async def login_page(request: Request, redirect: str | None = None, state: str |
     async with _pool(request).connection() as conn:
         renewal = await sessions.renew(conn, raw, settings, agent)
         if isinstance(renewal, Issued):
-            await store.audit(conn, "refresh", user_id=renewal.user.id, ip=ip, user_agent=agent)
+            await store.audit(
+                conn, "refresh", user_id=renewal.user.id, ip=ip, user_agent=agent,
+                metadata=local_signin_details(request, target) or None,
+            )  # fmt: skip
     if isinstance(renewal, Issued):
         response = _handoff(request, renewal.user, target, nonce)
         if renewal.refresh_token:
@@ -191,7 +209,10 @@ async def login(request: Request) -> Response:
             await store.clear_failures(conn, keys[:2])
             await store.touch_login(conn, user.id)
             raw = await sessions.issue(conn, user, settings, agent)
-            await store.audit(conn, "signin", user_id=user.id, ip=ip, user_agent=agent)
+            await store.audit(
+                conn, "signin", user_id=user.id, ip=ip, user_agent=agent,
+                metadata=local_signin_details(request, target) or None,
+            )  # fmt: skip
     finally:
         slots.release()
     response = _handoff(request, user, target, nonce)
@@ -384,7 +405,10 @@ async def test_account_signin(request: Request) -> Response:
             return render(request, "message.html", 403, title="Test accounts", message=INACTIVE)
         await store.touch_login(conn, user.id)
         raw = await sessions.issue(conn, user, settings, agent)
-        await store.audit(conn, "test_signin", user_id=user.id, ip=ip, user_agent=agent)
+        await store.audit(
+            conn, "test_signin", user_id=user.id, ip=ip, user_agent=agent,
+            metadata=local_signin_details(request, target) or None,
+        )  # fmt: skip
     response = _handoff(request, user, target, nonce)
     cookies.set_refresh(response, raw, settings)
     return response
