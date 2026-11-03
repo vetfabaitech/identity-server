@@ -18,7 +18,16 @@ from identity.oauth import PROVIDERS, OAuthError, Provider
 from identity.oauth.resolve import resolve_user
 from identity.redirects import Target, post_signin_target, valid_state
 from identity.web import cookies
-from identity.web.routes import INACTIVE, _client, _handoff, _login_page, _pool, _settings, _too_many
+from identity.web.routes import (
+    INACTIVE,
+    _client,
+    _handoff,
+    _login_page,
+    _pool,
+    _settings,
+    _too_many,
+    local_signin_details,
+)
 
 router = APIRouter(prefix="/auth/oauth")
 log = logging.getLogger("identity.oauth")
@@ -124,7 +133,11 @@ async def oauth_callback(
         raw = await sessions.issue(conn, user, settings, agent)
         await store.audit(
             conn, "oauth_signin", user_id=user.id, ip=ip, user_agent=agent,
-            metadata={"provider": provider.name, "outcome": resolved.outcome},
+            metadata={
+                "provider": provider.name,
+                "outcome": resolved.outcome,
+                **local_signin_details(request, target),
+            },
         )  # fmt: skip
     response = _handoff(request, user, target, nonce)
     cookies.set_refresh(response, raw, settings)

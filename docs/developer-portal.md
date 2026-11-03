@@ -65,6 +65,8 @@ session cookie, not the token) and opens `/developer/services`. Caddy routes `/d
   access tokens of anyone who followed a sign-in link. So everything a developer registers starts `pending`, and **nothing is
   activated automatically**, production or not.
 * Developers register in `local`/`staging` only; production services are registered by an administrator and also start `pending`.
+  A `local` service on a deployed identity service is accepted only while `IDENTITY_ALLOW_LOCALHOST_DEV_ORIGINS` is on, only
+  at a loopback address, and is the one kind that is **activated on registration**, with no administrator step (§14).
 
 ## 3. Registration and approval workflow
 
@@ -84,7 +86,7 @@ session cookie, not the token) and opens `/developer/services`. Caddy routes `/d
 
 Unique id; origin form (scheme `http(s)`, host, optional port; **no path, query, fragment or embedded credentials**);
 `https` for production and on any deployed identity service; production not on localhost or a private address; `local`
-refused on a deployed identity service; redemption path is a plain path (no `..`, no `//`); visibility roles are real
+refused on a deployed identity service (the one exception is §14); redemption path is a plain path (no `..`, no `//`); visibility roles are real
 roles; session length 60 to 3600; the address is not the identity host and not another service's; return-path prefixes are
 plain paths. **No request is ever made to the address**: validation inspects text only, so the API cannot be pointed at
 internal hosts (SSRF). A passing check means "the configuration is acceptable", not "the application works".
@@ -186,7 +188,7 @@ rate-limited so a stranger cannot flood the log). Owners and administrators read
   `ADMIN_RATE_LIMIT` (see `deploy/env.template`). `deploy/Caddyfile` adds `/developer*` and `/handoff`. HTTPS is Caddy's, as before.
   Add `PUBLIC_ORIGIN` to `EXTRA_APP_ORIGINS` for the portal's sign-in, and make at least one administrator (`ADMIN_EMAILS`, as today).
 * Development and production are separate by configuration: a deployed identity service refuses `local` services and plain
-  http; a development one accepts `http://localhost`.
+  http (unless the staging-only opt-in in §14 is on); a development one accepts `http://localhost`.
 
 ## 10. Try it locally
 
@@ -247,3 +249,58 @@ event loop for the identity service; see [adapter.md](adapter.md).)
 * Recent authentication is not required (see §5). Audit rows are not rotated or exported.
 * The shared audience `aud=vetfab` is unchanged (see [sso-handoff.md](sso-handoff.md) §8).
 * The LMS and IDE repositories were not available; neither is integrated here, and nothing in them was changed.
+
+## 14. Developing against the deployed identity
+
+Like a GitHub OAuth app that may use an `http://localhost` callback, a service running on a developer's machine can sign in
+through the **deployed** identity service. It is off by default.
+
+**Turn it on (operator, staging only).** Set `IDENTITY_ALLOW_LOCALHOST_DEV_ORIGINS=true` (`ALLOW_LOCALHOST_DEV_ORIGINS=true`
+in `deploy/.env`). The service refuses to start with it set while `IDENTITY_ENVIRONMENT=production`. Turning it off again makes
+every localhost service inert within `IDENTITY_REGISTRY_REFRESH_SECONDS`; the rows stay.
+
+**Register (any developer with the `local` grant); it is active at once, with no administrator step.** With the setting off,
+registering a `local` service on a deployed identity service is refused. A developer can disable their own; bringing a disabled
+one back is still an administrator's. Everything that is not exactly a loopback `local` origin still starts `pending`.
+
+| Portal field | Value |
+|---|---|
+| Environment | **Local** (shown as *Development*) |
+| Base URL | `http://localhost:8765` (or `http://127.0.0.1:8765`; any port from 1024 to 65535) |
+| Redemption path | `/handoff/redeem` |
+
+The base URL must be exactly `http://localhost:<port>` or `http://127.0.0.1:<port>`: no other http host, no wildcard, no path,
+no userinfo, an explicit port from 1024 to 65535. Anything else on a deployed identity service must still be https, and a
+production-environment service never accepts any of this. A developer can add no other trusted origin this way: validation admits
+only those two loopback spellings, so what is auto-activated can only be the person's own machine. Activation of everything else
+stays administrator-only.
+
+**What a localhost origin may do**
+
+| | |
+|---|---|
+| `GET /auth/login?redirect=http://localhost:8765/…` and the redirect to `http://localhost:8765/handoff#token=…` | yes, while the service is **active** and the setting is on. Exact origin match, a path only after the origin: look-alikes such as `http://localhost.evil.com`, `http://localhost@evil.com` or another port fall back to the default origin |
+| Sign-out redirect (`POST /auth/logout?redirect=http://localhost:8765/…`, posted from the identity host's own pages) | yes |
+| `POST /auth/session/token`, `GET /auth/services`, `POST /auth/handoff` (CORS) | **no**: no `Access-Control-Allow-Origin` is ever sent to a localhost origin |
+| The service switcher, hand-off tickets (source or target), secret redemption | **no**: a `local` service is never enabled for hand-off on a deployed identity service |
+
+**No silent renewal, by design.** The refresh cookie is `Secure`, `SameSite=Lax`, `Path=/auth` on the identity host; a
+`localhost` page is a different site, so it cannot send it, and the cookie attributes are not loosened. A localhost app
+therefore gets **one access token per full-page sign-in**: send the browser to `GET /auth/login?redirect=…&state=…`, take the
+token from `/handoff#token=…`, and when it expires (15 minutes at most) send the person through `/auth/login` again. It must
+not call `POST /auth/session/token` (the browser blocks it; the SDK's `renew()` would report a network failure). While the
+person has a live session on the identity host, `/auth/login` hands the next token back without asking when
+`IDENTITY_SILENT_SIGN_IN` is true; otherwise they see the sign-in page.
+
+**Audit.** The existing rows carry `local_origin: true` and the origin: `service_created` (registered) and
+`service_status_changed` (activated, with `auto_approved: true`). Each `signin`, `refresh`, `oauth_signin` and `test_signin` that lands on a localhost origin
+carries the same fields plus the service id (so it appears in that service's activity). The same three events are logged at
+INFO (`localhost development origin registered`, `... activated`, `sign-in handed to localhost development origin`). No audit
+action was added, so no migration is needed. No token or secret is in either.
+
+**Trade-offs.** An access token (15 minutes) is delivered over plain http to whatever listens on that port of the
+signed-in person's own machine: another local process or a browser extension could read it, which is why this is for
+staging and a person's own browser only, never production. No administrator reviews a localhost registration, so any
+developer with the `local` grant can make any localhost port a valid sign-in destination for every user's browser, which is
+harmless unless that user is running something hostile on that port. The token's audience is the shared `vetfab`, so a token obtained this way is accepted by every product
+trusting this issuer: use test accounts or staging data, not production accounts.

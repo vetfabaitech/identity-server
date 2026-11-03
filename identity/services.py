@@ -21,7 +21,9 @@ validation both paths share.
   of entropy, so a plain SHA-256 is the right hash.
 * `roles`: optional; when present only accounts with one of these `public.users.role` values see the service or may
   start a hand-off to it. That is visibility at the issuer. The destination's own authorisation still decides access.
-* `environment`: `local`, `staging` or `production`, a label shown to people. `local` is refused on a deployed service.
+* `environment`: `local`, `staging` or `production`, a label shown to people. `local` is refused on a deployed service,
+  except when IDENTITY_ALLOW_LOCALHOST_DEV_ORIGINS is on and `base_url` is exactly `http://localhost:<port>` or
+  `http://127.0.0.1:<port>` (port 1024-65535): a developer's own machine signing in against the deployed identity.
 * `return_path_prefixes`: optional; when present a hand-off may only land under one of these paths on the service.
 * An env-seeded service's `base_url` must also be in IDENTITY_APP_ORIGINS. A managed service's origin joins the
   allowlist only while it is **active**, so a pending registration is never trusted with a sign-in.
@@ -49,7 +51,15 @@ _ID = re.compile(r"^[a-z][a-z0-9-]{1,31}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _PATH = re.compile(r"^/[A-Za-z0-9._~/-]{0,128}$")
 _PREFIX = re.compile(r"^/[A-Za-z0-9._~/-]{0,127}$")
+# The only http origins a deployed identity service ever trusts, and only for a `local` service while the opt-in is on.
+_LOCALHOST_DEV = re.compile(r"http://(?:localhost|127\.0\.0\.1):([1-9][0-9]{3,4})")
 _DUMMY_HASH = hashlib.sha256(b"no such service").hexdigest()
+
+
+def is_localhost_dev_origin(origin: str) -> bool:
+    """Exactly `http://localhost:<port>` or `http://127.0.0.1:<port>`, port 1024-65535: no path, userinfo or other host."""
+    match = _LOCALHOST_DEV.fullmatch(origin)
+    return match is not None and 1024 <= int(match[1]) <= 65535
 
 
 class RegistryError(ValueError):
@@ -153,11 +163,20 @@ def _origin(entry: str, value: object) -> str:
     return f"{parts.scheme}://{parts.hostname}{port}"
 
 
-def clean_fields(raw: Mapping[str, Any], *, deployed: bool, label: str, require_secret_hash: bool) -> dict[str, Any]:
+def clean_fields(
+    raw: Mapping[str, Any],
+    *,
+    deployed: bool,
+    label: str,
+    require_secret_hash: bool,
+    allow_localhost_dev: bool = False,
+) -> dict[str, Any]:
     """Validates and normalises the fields of one registry entry; returns only validated values.
 
     Shared by the environment seed and the developer portal, so both enforce exactly the same rules. `deployed` is
     whether the identity service itself is staging or production: it refuses plain http and `local` services.
+    `allow_localhost_dev` (IDENTITY_ALLOW_LOCALHOST_DEV_ORIGINS) makes the one exception: a `local` service on a loopback
+    `http://localhost:<port>` origin. It never admits any other http origin, and never a non-`local` service.
     """
     service_id = raw.get("id")
     if not isinstance(service_id, str) or not _ID.match(service_id):
@@ -205,12 +224,17 @@ def clean_fields(raw: Mapping[str, Any], *, deployed: bool, label: str, require_
         raise RegistryError(
             f"{entry}: session_seconds must be a whole number from {MIN_SESSION_SECONDS} to {MAX_SESSION_SECONDS}."
         )
-    if deployed and not base_url.startswith("https://"):
+    local_dev = allow_localhost_dev and environment == "local" and is_localhost_dev_origin(base_url)
+    if deployed and not base_url.startswith("https://") and not local_dev:
         raise RegistryError(f"{entry}: base_url must use https on a deployed service.")
     if environment == "production" and not base_url.startswith("https://"):
         raise RegistryError(f"{entry}: a production service must use https.")
-    if deployed and environment == "local":
-        raise RegistryError(f"{entry}: a local service cannot be registered on a deployed identity service.")
+    if deployed and environment == "local" and not local_dev:
+        raise RegistryError(
+            f"{entry}: a local service cannot be registered on a deployed identity service unless it is "
+            "http://localhost:<port> or http://127.0.0.1:<port> (port 1024-65535) and the identity service allows "
+            "localhost development origins."
+        )
     cleaned: dict[str, Any] = {
         "id": service_id,
         "display_name": name.strip(),

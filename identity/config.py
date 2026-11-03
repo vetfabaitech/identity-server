@@ -106,6 +106,12 @@ class Settings(BaseSettings):
     # Mutations per administrator per rate-limit window on the developer portal API; secret operations get a sixth.
     admin_rate_limit: int = Field(default=60, ge=6, le=1000)
 
+    # Developing against this deployed service from localhost (like a GitHub OAuth app's http://localhost callback). Off by
+    # default. When on, an administrator may activate a `local` service whose base_url is exactly
+    # http://localhost:<port> or http://127.0.0.1:<port>; it receives sign-ins (GET /auth/login) and nothing else: no
+    # CORS, no switcher, no hand-off tickets. Refused in production.
+    allow_localhost_dev_origins: bool = False
+
     # Comma-separated emails that become approved administrators on OAuth sign-in (the IDE's BETA_ADMIN_EMAILS
     # bootstrap, spec SI-5/SI-7).
     admin_emails: str = ""
@@ -142,6 +148,8 @@ class Settings(BaseSettings):
             parse_registry(self.services, app_origins=self.app_origin_list, deployed=self.deployed)
         except RegistryError as exc:
             raise ValueError(f"IDENTITY_SERVICES: {exc}") from exc
+        if self.allow_localhost_dev_origins and self.environment == "production":
+            raise ValueError("IDENTITY_ALLOW_LOCALHOST_DEV_ORIGINS is refused in production.")
         if self.test_accounts:
             if self.environment == "production":
                 raise ValueError("IDENTITY_TEST_ACCOUNTS is refused in production.")
@@ -161,6 +169,16 @@ class Settings(BaseSettings):
     @property
     def app_origin_list(self) -> list[str]:
         return self.app_origins.split(",")
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        """The app origins whose pages may call the credentialed endpoints (renewal, switcher, hand-off tickets).
+
+        On a deployed service a plain-http origin can only be a localhost development origin (every other one must be
+        https). It receives sign-ins through the redirect but never a readable cross-origin answer: its page is on a
+        different site from the refresh cookie, so it cannot renew silently anyway.
+        """
+        return [o for o in self.app_origin_list if not (self.deployed and o.startswith("http://"))]
 
     @property
     def app_origin(self) -> str:

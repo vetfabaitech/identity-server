@@ -209,6 +209,18 @@ refresh cookie works over plain http in development (it is `Secure` only when th
 
 On Windows, psycopg's async mode needs the selector event loop; the service works as is on Linux/macOS and in CI.
 
+### Or run only your service on localhost, against the deployed identity
+
+If the staging identity service has `IDENTITY_ALLOW_LOCALHOST_DEV_ORIGINS=true` (ask your operator), you do not need a local
+identity service. Register a service in the [developer portal](developer-portal.md) with Environment **Local**, Base URL
+`http://localhost:8765` and redemption path `/handoff/redeem`, it is active immediately, and run your service with
+`VETFAB_AUTH_URL=https://<the staging identity host>`, `VETFAB_ENVIRONMENT=development` and `VETFAB_APP_URL=http://localhost:8765`.
+
+Your page and the identity host are different sites, so the refresh cookie never reaches it: **no silent renewal**. You get
+one token per full-page sign-in (send the browser to `GET <auth>/auth/login?redirect=http://localhost:8765/…&state=…`), and
+you must not call `POST /auth/session/token` (CORS refuses localhost origins). When the token expires, redirect to
+`/auth/login` again. See [developer-portal.md](developer-portal.md) §14 for the exact rules and the trade-offs.
+
 ## Staging and production
 
 Same code, different values. For a staging deployment of a product, add *its* staging origin to `EXTRA_APP_ORIGINS` of the
@@ -242,6 +254,8 @@ test accounts off in production) are unchanged.
 | Backend `401 invalid_token` for fresh tokens | `VETFAB_AUTH_ISSUER`/`AUDIENCE` differ from the service's, or the clock is off by more than 30 s |
 | Backend `503 identity_unavailable` | The JWKS URL cannot be reached from the backend (and the cached keys are over an hour old) |
 | Renewal always `401` in development | Different sites (not `localhost`↔`localhost`), or http↔https mixed |
+| Localhost app on the deployed identity: renewal is blocked | By design: a localhost origin gets no CORS answer and no cookie. Redirect to `/auth/login` for each token |
+| Localhost app on the deployed identity lands on the default product | The service is disabled, `IDENTITY_ALLOW_LOCALHOST_DEV_ORIGINS` is off, or the redirect differs from the registered origin (port, `localhost` vs `127.0.0.1`) |
 | `ConfigError` at start-up | The message names each variable to fix |
 
 ## Rotating secrets and keys

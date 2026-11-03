@@ -22,7 +22,9 @@ same filesystem, and never import a product's code.
 - The service registry is in PostgreSQL (`registry_store.py`, `identity.services`, migration 0005) and managed by the developer
   portal (`web/admin_routes.py` = every permission check, `web/static/developer/` = the page, `registry_cache.py`).
   `IDENTITY_SERVICES` only seeds it and never overwrites a row. A service's origin joins the sign-in allowlist only while
-  **active**, and only an administrator activates: never let a developer path add a trusted origin. No `DELETE` on services,
+  **active**, and only an administrator activates: never let a developer path add a trusted origin. The one exception is a `local`
+  service at exactly `http://localhost|127.0.0.1:<port>`, activated on registration while `IDENTITY_ALLOW_LOCALHOST_DEV_ORIGINS` is on
+  (staging only, sign-in redirect only; docs/developer-portal.md §14). No `DELETE` on services,
   ever (disable). Secrets are stored as hashes and shown once; never log, return or audit one. Docs: `docs/developer-portal.md`.
 - `services.py` (the service model and validation), `handoff.py` (one-time tickets: atomic single use, bound to
   user, session and destination) and `web/handoff_routes.py` are the SSO hand-off (`docs/sso-handoff.md`). Tickets are
