@@ -27,6 +27,10 @@ x-identity-env: &identity-env
   IDENTITY_ADMIN_RATE_LIMIT: ${ADMIN_RATE_LIMIT:-60}
   # Staging only (refused in production): trust activated http://localhost:<port> services for sign-in redirects.
   IDENTITY_ALLOW_LOCALHOST_DEV_ORIGINS: ${ALLOW_LOCALHOST_DEV_ORIGINS:-false}
+  # The signed user feed (CONTRACT.md, "User feed"): the registry services that may read it. Empty: off.
+  IDENTITY_USER_FEED_SERVICES: ${USER_FEED_SERVICES:-}
+  IDENTITY_USER_FEED_RATE_LIMIT: ${USER_FEED_RATE_LIMIT:-1200}
+  IDENTITY_USER_EVENTS_RETENTION_DAYS: ${USER_EVENTS_RETENTION_DAYS:-30}
   # false: a service that sends someone to sign in always gets the sign-in page; no silent single sign-on.
   IDENTITY_SILENT_SIGN_IN: ${SILENT_SIGN_IN:-false}
   IDENTITY_GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}

@@ -9,6 +9,7 @@ import pytest
 from psycopg import sql
 
 from tests.conftest import (
+    IDENTITY_DIR,
     LMS_USERS_STUB,
     LOGIN_PASSWORD,
     LOGIN_ROLE,
@@ -398,3 +399,106 @@ def test_the_feed_functions_are_definer_functions_with_a_fixed_search_path(datab
         "record_user_event": (True, ["search_path=pg_catalog, pg_temp"], False, False),
         "purge_user_events": (True, ["search_path=pg_catalog, pg_temp"], False, True),
     }
+
+
+# --------------------------------------------------------------------------- the Supabase SQL-editor scripts (deploy/supabase-identity*.sql)
+
+DEPLOY = IDENTITY_DIR / "deploy"
+
+
+def run_script(url: str, name: str) -> None:
+    """Runs a whole file as one simple query, as the Supabase SQL editor does: an error stops everything after it."""
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute(cast(LiteralString, (DEPLOY / name).read_text()))
+
+
+def installed_version(url: str) -> str:
+    with psycopg.connect(url) as conn:
+        row = conn.execute("SELECT version_num FROM identity.alembic_version").fetchone()
+    assert row is not None
+    return row[0]
+
+
+def offline(*args: str) -> str:
+    """What `alembic <args> --sql` renders, normalised the way the committed files are."""
+    import io
+
+    from alembic import command
+    from alembic.config import Config
+
+    buffer = io.StringIO()
+    config = Config(str(IDENTITY_DIR / "alembic.ini"), output_buffer=buffer)
+    config.set_main_option("script_location", str(IDENTITY_DIR / "migrations"))
+    config.cmd_opts = type("Opts", (), {"x": ["url=postgresql://x@localhost/x"]})()  # pyright: ignore[reportAttributeAccessIssue]
+    getattr(command, args[0])(config, *args[1:], sql=True)
+    return buffer.getvalue().replace("END $$;;", "END $$;").rstrip("\n") + "\n"
+
+
+def test_the_committed_scripts_are_what_alembic_renders() -> None:
+    """Regenerate deploy/supabase-identity*.sql after changing a migration (their headers say how)."""
+    from importlib import util
+
+    assert offline("upgrade", "head") in (DEPLOY / "supabase-identity.sql").read_text()
+    assert offline("downgrade", "0006:0005") in (DEPLOY / "supabase-identity-rollback-0006.sql").read_text()
+    assert offline("downgrade", "0005:0003") in (DEPLOY / "supabase-identity-rollback.sql").read_text()
+    spec = util.spec_from_file_location("m0006", IDENTITY_DIR / "migrations/versions/0006_user_feed.py")
+    assert spec is not None and spec.loader is not None
+    module = util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.UPGRADE_SQL.strip("\n") in (DEPLOY / "supabase-identity-upgrade.sql").read_text()
+
+
+@pytest.mark.parametrize("start", ["0001", "0002", "0003", "0004", "0005"])
+def test_the_supabase_upgrade_script_brings_any_version_to_0006(scratch: str, start: str) -> None:
+    url = db_url(scratch)
+    alembic(url, "upgrade", start)
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute("INSERT INTO public.users (email, display_name, status) VALUES ('a@x.test', 'A', 'approved')")
+    run_script(url, "supabase-identity-upgrade.sql")
+    assert installed_version(url) == "0006"
+    assert feed_objects(url) == (FEED_TABLES, FEED_TRIGGERS, FEED_FUNCTIONS)
+    assert tables(url) >= {"services", "developer_grants", "handoff_tickets", "oauth_accounts"}
+    run_script(url, "supabase-identity-upgrade.sql")  # again: a no-op
+    with psycopg.connect(url, autocommit=True) as conn:
+        assert conn.execute("SELECT version FROM identity.user_versions").fetchall() == [(1,)]
+        conn.execute("UPDATE public.users SET status = 'suspended'")
+        assert conn.execute("SELECT version, type FROM identity.user_events").fetchall() == [(2, "user.updated")]
+    alembic(url, "downgrade", "0005")  # alembic agrees with what the script left behind
+    alembic(url, "upgrade", "head")
+
+
+def test_the_supabase_install_script_on_an_ide_project(scratch: str) -> None:
+    url = db_url(scratch)
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute(cast(LiteralString, IDE_USERS))
+        conn.execute(
+            """INSERT INTO public.users (oauth_provider, oauth_id, username, display_name, email, status)
+               VALUES ('github', '1001', 'octo', 'Octo', 'octo@x.test', 'approved')"""
+        )
+    run_script(url, "supabase-identity.sql")
+    assert installed_version(url) == "0006"
+    assert feed_objects(url) == (FEED_TABLES, FEED_TRIGGERS, FEED_FUNCTIONS)
+    with psycopg.connect(url, autocommit=True) as conn:
+        assert conn.execute("SELECT version FROM identity.user_versions").fetchall() == [(1,)]
+        conn.execute("UPDATE public.users SET status = 'suspended' WHERE username = 'octo'")
+        assert conn.execute("SELECT version, status FROM identity.user_events").fetchall() == [(2, "suspended")]
+    with pytest.raises(psycopg.errors.RaiseException, match="already installed"):
+        run_script(url, "supabase-identity.sql")
+
+
+def test_the_supabase_rollback_scripts_undo_one_step_each_and_refuse_the_wrong_version(scratch: str) -> None:
+    url = db_url(scratch)
+    alembic(url, "upgrade", "head")
+    with pytest.raises(psycopg.errors.RaiseException, match="rollback-0006"):
+        run_script(url, "supabase-identity-rollback.sql")  # would drop the registry under a 0006 schema
+    assert installed_version(url) == "0006" and "services" in tables(url)
+    run_script(url, "supabase-identity-rollback-0006.sql")
+    assert installed_version(url) == "0005"
+    assert feed_objects(url) == (set(), set(), set())
+    with pytest.raises(psycopg.errors.RaiseException, match="removes migration 0006"):
+        run_script(url, "supabase-identity-rollback-0006.sql")
+    run_script(url, "supabase-identity-rollback.sql")
+    assert installed_version(url) == "0003"
+    assert not tables(url) & {"services", "developer_grants", "handoff_tickets"}
+    run_script(url, "supabase-identity-upgrade.sql")
+    assert installed_version(url) == "0006"

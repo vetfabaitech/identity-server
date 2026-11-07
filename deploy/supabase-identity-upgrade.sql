@@ -1,20 +1,24 @@
 -- =====================================================================================================================
--- Vetfab identity service: UPGRADE an existing identity schema to the current version (0005).
+-- Vetfab identity service: UPGRADE an existing identity schema to the current version (0006).
 -- For a Supabase project that ALREADY has the `identity` schema (the earlier LMS-era identity service created it on the
 -- same project the IDE uses). For a project with no identity schema at all, run supabase-identity.sql instead.
 --
 -- HOW TO RUN: Supabase Dashboard -> SQL Editor -> paste this whole file -> Run. Back up first (Database -> Backups).
--- Safe to run again: it reads identity.alembic_version and applies only the steps that are missing (0001..0004 -> 0005);
--- at 0005 it does nothing. If the installed version is not one of 0001-0005 it stops and tells you which it found.
+-- Safe to run again: it reads identity.alembic_version and applies only the steps that are missing (0001..0005 -> 0006);
+-- at 0006 it does nothing. If the installed version is not one of 0001-0006 it stops and tells you which it found.
 --
 -- WHAT IT ADDS (additive; nothing is dropped, no row is changed)
 --   * 0004  identity.handoff_tickets (one-time SSO hand-off tickets) + 3 audit actions
 --   * 0005  identity.services and identity.developer_grants (the managed service registry, used by the developer portal)
 --           + 10 audit actions
+--   * 0006  identity.user_versions and identity.user_events (the user feed), three triggers on public.users and the
+--           purge function. Every existing account gets version 1; no row of public.users changes. From then on every
+--           new or deleted account and every change to email, display_name or status, whoever makes it (the IDE
+--           included), also writes one event. The step briefly locks public.users against writes while it runs.
 --   * public.users: oauth_provider, oauth_id, username become NULLABLE if they are not already (harmless if done).
 -- The current identity service keeps working while this runs and after it: it does not use the new tables.
 --
--- UNDO: supabase-identity-rollback.sql (removes only 0004-0005).
+-- UNDO: supabase-identity-rollback-0006.sql (removes only 0006), then supabase-identity-rollback.sql (0004-0005).
 -- =====================================================================================================================
 
 -- 1. Checks. Nothing below runs if one fails.
@@ -25,8 +29,8 @@ BEGIN
     RAISE EXCEPTION 'No identity schema here (identity.alembic_version is missing). Run supabase-identity.sql instead.';
   END IF;
   SELECT version_num INTO found FROM identity.alembic_version LIMIT 1;
-  IF found IS NULL OR found NOT IN ('0001', '0002', '0003', '0004', '0005') THEN
-    RAISE EXCEPTION 'Unexpected identity migration version: %. This script upgrades 0001..0004 to 0005; send this value to the developers.', coalesce(found, '(empty)');
+  IF found IS NULL OR found NOT IN ('0001', '0002', '0003', '0004', '0005', '0006') THEN
+    RAISE EXCEPTION 'Unexpected identity migration version: %. This script upgrades 0001..0005 to 0006; send this value to the developers.', coalesce(found, '(empty)');
   END IF;
   RAISE NOTICE 'identity schema is at version %', found;
 END $$;
@@ -188,11 +192,115 @@ ALTER TABLE identity.audit ADD CONSTRAINT audit_action_check CHECK (action IN (
     v := '0005';
     RAISE NOTICE 'identity schema upgraded to 0005';
   END IF;
-  IF v = '0005' AND NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'identity' AND c.relname = 'services') THEN
-    RAISE EXCEPTION 'Version says 0005 but identity.services is missing; the schema is inconsistent. Send this to the developers.';
+  IF v = '0005' THEN
+    -- migration 0005 -> 0006
+    EXECUTE $sql$
+-- No user write may slip in between the backfill and the triggers.
+LOCK TABLE public.users IN SHARE ROW EXCLUSIVE MODE;
+
+CREATE TABLE identity.user_versions (
+  user_id uuid PRIMARY KEY,
+  version bigint NOT NULL CHECK (version >= 1)
+);
+INSERT INTO identity.user_versions (user_id, version) SELECT id, 1 FROM public.users;
+ALTER TABLE identity.user_versions ENABLE ROW LEVEL SECURITY;
+CREATE POLICY user_versions_identity_service ON identity.user_versions FOR SELECT TO identity_app USING (true);
+GRANT SELECT ON identity.user_versions TO identity_app;
+
+CREATE TABLE identity.user_events (
+  seq bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  user_id uuid NOT NULL,
+  version bigint NOT NULL CHECK (version >= 1),
+  type text NOT NULL CHECK (type IN ('user.created', 'user.updated', 'user.deleted')),
+  occurred_at timestamptz NOT NULL DEFAULT now(),
+  email text,
+  display_name text,
+  status text
+);
+CREATE INDEX user_events_occurred_at_idx ON identity.user_events (occurred_at, seq);
+ALTER TABLE identity.user_events ENABLE ROW LEVEL SECURITY;
+CREATE POLICY user_events_identity_service ON identity.user_events FOR SELECT TO identity_app USING (true);
+GRANT SELECT ON identity.user_events TO identity_app;
+
+CREATE FUNCTION identity.record_user_event() RETURNS trigger
+  LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  next_version bigint;
+BEGIN
+  -- Serialises seq allocation and commit among user-identity writes, so events become visible in seq order.
+  PERFORM pg_catalog.pg_advisory_xact_lock(5279438479318730070);
+  IF TG_OP = 'DELETE' THEN
+    INSERT INTO identity.user_versions AS v (user_id, version) VALUES (OLD.id, 2)
+      ON CONFLICT (user_id) DO UPDATE SET version = v.version + 1
+      RETURNING v.version INTO next_version;
+    INSERT INTO identity.user_events (user_id, version, type) VALUES (OLD.id, next_version, 'user.deleted');
+  ELSE
+    -- A new id starts at 1; a user with no row yet (written while the triggers were off) was implicitly at 1.
+    INSERT INTO identity.user_versions AS v (user_id, version)
+      VALUES (NEW.id, CASE WHEN TG_OP = 'INSERT' THEN 1 ELSE 2 END)
+      ON CONFLICT (user_id) DO UPDATE SET version = v.version + 1
+      RETURNING v.version INTO next_version;
+    INSERT INTO identity.user_events (user_id, version, type, email, display_name, status)
+      VALUES (NEW.id, next_version, CASE WHEN TG_OP = 'INSERT' THEN 'user.created' ELSE 'user.updated' END,
+              NEW.email, NEW.display_name, NEW.status);
+  END IF;
+  RETURN NULL;
+END
+$fn$;
+REVOKE ALL ON FUNCTION identity.record_user_event() FROM PUBLIC;
+
+CREATE TRIGGER identity_user_event_insert AFTER INSERT ON public.users
+  FOR EACH ROW EXECUTE FUNCTION identity.record_user_event();
+CREATE TRIGGER identity_user_event_update AFTER UPDATE OF email, display_name, status ON public.users
+  FOR EACH ROW
+  WHEN (OLD.email IS DISTINCT FROM NEW.email OR OLD.display_name IS DISTINCT FROM NEW.display_name
+        OR OLD.status IS DISTINCT FROM NEW.status)
+  EXECUTE FUNCTION identity.record_user_event();
+CREATE TRIGGER identity_user_event_delete AFTER DELETE ON public.users
+  FOR EACH ROW EXECUTE FUNCTION identity.record_user_event();
+
+CREATE FUNCTION identity.purge_user_events(retention_days integer, max_rows integer) RETURNS bigint
+  LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  head bigint;
+  through bigint;
+  removed bigint;
+BEGIN
+  SELECT max(e.seq) INTO head FROM identity.user_events e;
+  SELECT max(old.seq) INTO through FROM (
+    SELECT e.seq FROM identity.user_events e
+     WHERE e.occurred_at < pg_catalog.now() - pg_catalog.make_interval(days => GREATEST(retention_days, 7))
+     ORDER BY e.occurred_at, e.seq LIMIT GREATEST(max_rows, 1)) old;
+  IF through IS NULL THEN
+    RETURN 0;  -- nothing has expired (LEAST below would ignore the NULL)
+  END IF;
+  -- A prefix by seq, and never the newest event: max(seq) stays the head, min(seq) shows a purged gap.
+  through := LEAST(through, head - 1);
+  IF through < 1 THEN
+    RETURN 0;
+  END IF;
+  DELETE FROM identity.user_events e WHERE e.seq <= through;
+  GET DIAGNOSTICS removed = ROW_COUNT;
+  RETURN removed;
+END
+$fn$;
+REVOKE ALL ON FUNCTION identity.purge_user_events(integer, integer) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.purge_user_events(integer, integer) TO identity_app;
+    $sql$;
+    UPDATE identity.alembic_version SET version_num = '0006';
+    v := '0006';
+    RAISE NOTICE 'identity schema upgraded to 0006';
+  END IF;
+  IF v = '0006' AND NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'identity' AND c.relname = 'services') THEN
+    RAISE EXCEPTION 'Version says 0006 but identity.services is missing; the schema is inconsistent. Send this to the developers.';
+  END IF;
+  IF v = '0006' AND NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'public.users'::regclass AND tgname = 'identity_user_event_update') THEN
+    RAISE EXCEPTION 'Version says 0006 but the user-feed triggers on public.users are missing; the schema is inconsistent. Send this to the developers.';
   END IF;
 END $mig$;
 
--- 4. Check (run separately afterwards): expect version 0005 and these 8 tables.
+-- 4. Check (run separately afterwards): expect version 0006 and these 10 tables.
 --    select version_num from identity.alembic_version;
 --    select table_name from information_schema.tables where table_schema = 'identity' order by 1;

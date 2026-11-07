@@ -1,6 +1,16 @@
 -- Removes ONLY migrations 0004-0005 (hand-off tickets, the managed service registry, developer grants) and their audit rows.
 -- ALL services registered in the developer portal are lost (copy identity.services out first). User accounts, sessions and
 -- the IDE's tables are not touched. Generated with: alembic downgrade 0005:0003 --sql
+-- Run it on a schema at 0005 (it stops otherwise): on one at 0006, run supabase-identity-rollback-0006.sql first.
+DO $$
+DECLARE found text;
+BEGIN
+  SELECT version_num INTO found FROM identity.alembic_version LIMIT 1;
+  IF found IS DISTINCT FROM '0005' THEN
+    RAISE EXCEPTION 'This script removes migrations 0004-0005 from a schema at 0005, but it is at %. Nothing was changed (at 0006, run supabase-identity-rollback-0006.sql first).', coalesce(found, '(empty)');
+  END IF;
+END $$;
+
 BEGIN;
 
 -- Running downgrade 0005 -> 0004
