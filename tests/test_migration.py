@@ -202,6 +202,8 @@ def test_every_identity_table_has_row_level_security(database: str) -> None:
         "handoff_tickets",
         "services",
         "developer_grants",
+        "user_versions",
+        "user_events",
         "users",
     }
     for name, rls, policies in rows:
@@ -295,3 +297,104 @@ def test_0003_is_a_no_op_without_the_ide_columns(scratch: str) -> None:
     assert "oauth_accounts" in tables(url)
     alembic(url, "downgrade", "0002")
     alembic(url, "upgrade", "head")
+
+
+# --------------------------------------------------------------------------- 0006: the user feed (CONTRACT.md, "User feed")
+
+FEED_TABLES = {"user_versions", "user_events"}
+FEED_TRIGGERS = {"identity_user_event_insert", "identity_user_event_update", "identity_user_event_delete"}
+FEED_FUNCTIONS = {"record_user_event", "purge_user_events"}
+
+
+def feed_objects(url: str) -> tuple[set[str], set[str], set[str]]:
+    """(identity tables of the feed, triggers on public.users, identity functions of the feed) that exist."""
+    with psycopg.connect(url) as conn:
+        triggers = conn.execute(
+            "SELECT tgname FROM pg_trigger WHERE tgrelid = 'public.users'::regclass AND NOT tgisinternal"
+        ).fetchall()
+        functions = conn.execute(
+            """SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                WHERE n.nspname = 'identity'"""
+        ).fetchall()
+    return tables(url) & FEED_TABLES, {r[0] for r in triggers}, {r[0] for r in functions} & FEED_FUNCTIONS
+
+
+def test_0006_backfills_every_user_at_version_1_and_rolls_back_cleanly(scratch: str) -> None:
+    url = db_url(scratch)
+    alembic(url, "upgrade", "0005")
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute("INSERT INTO public.users (email, display_name) VALUES ('a@x.test', 'A'), ('b@x.test', 'B')")
+    alembic(url, "upgrade", "head")
+    assert feed_objects(url) == (FEED_TABLES, FEED_TRIGGERS, FEED_FUNCTIONS)
+    with psycopg.connect(url, autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT count(*) FROM public.users u JOIN identity.user_versions v ON v.user_id = u.id
+                WHERE v.version = 1"""
+        ).fetchone() == (2,)
+        assert conn.execute("SELECT count(*) FROM identity.user_events").fetchone() == (0,)  # a backfill is no event
+        conn.execute("UPDATE public.users SET status = 'approved' WHERE email = 'a@x.test'")
+        assert conn.execute("SELECT version, type FROM identity.user_events").fetchall() == [(2, "user.updated")]
+    alembic(url, "downgrade", "0005")
+    assert feed_objects(url) == (set(), set(), set())
+    with psycopg.connect(url, autocommit=True) as conn:  # the users table works exactly as before
+        conn.execute("UPDATE public.users SET display_name = 'A2' WHERE email = 'a@x.test'")
+        conn.execute("DELETE FROM public.users WHERE email = 'b@x.test'")
+        conn.execute("INSERT INTO public.users (email, display_name) VALUES ('c@x.test', 'C')")
+    alembic(url, "upgrade", "head")
+    with psycopg.connect(url) as conn:
+        assert conn.execute("SELECT count(*), min(version), max(version) FROM identity.user_versions").fetchone() == (
+            2,
+            1,
+            1,
+        )
+
+
+def test_0006_records_changes_on_the_ide_users_table(scratch: str) -> None:
+    """The IDE's own table (shared, SI-2): its profile columns change silently, its admin console's status changes
+    are events."""
+    url = db_url(scratch)
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute(cast(LiteralString, IDE_USERS))
+        conn.execute(
+            """INSERT INTO public.users (oauth_provider, oauth_id, username, display_name, email, status)
+               VALUES ('github', '1001', 'octo', 'Octo', 'octo@x.test', 'pending')"""
+        )
+    alembic(url, "upgrade", "head")
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute("UPDATE public.users SET username = 'octo2', oauth_id = '1002' WHERE email = 'octo@x.test'")
+        conn.execute("UPDATE public.users SET status = 'approved', role = 'admin' WHERE email = 'octo@x.test'")
+        rows = conn.execute("SELECT version, type, email, display_name, status FROM identity.user_events").fetchall()
+    assert rows == [(2, "user.updated", "octo@x.test", "Octo", "approved")]
+
+
+def test_the_service_role_only_reads_the_feed_and_purges_through_the_function(database: str) -> None:
+    with _as_login(database) as conn:
+        conn.execute("SET ROLE identity_app")
+        conn.execute("SELECT count(*) FROM identity.user_events")
+        conn.execute("SELECT count(*) FROM identity.user_versions")
+        conn.execute("SELECT identity.purge_user_events(30, 1)")
+        for statement in (
+            "INSERT INTO identity.user_events (user_id, version, type) VALUES (gen_random_uuid(), 1, 'user.created')",
+            "UPDATE identity.user_events SET version = version + 1",
+            "DELETE FROM identity.user_events",
+            "INSERT INTO identity.user_versions (user_id, version) VALUES (gen_random_uuid(), 1)",
+            "UPDATE identity.user_versions SET version = version + 1",
+            "DELETE FROM identity.user_versions",
+        ):
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                conn.execute(cast(LiteralString, statement))
+
+
+def test_the_feed_functions_are_definer_functions_with_a_fixed_search_path(database: str) -> None:
+    with psycopg.connect(db_url(database)) as conn:
+        rows = conn.execute(
+            """SELECT p.proname, p.prosecdef, p.proconfig, has_function_privilege('public', p.oid, 'EXECUTE'),
+                      has_function_privilege('identity_app', p.oid, 'EXECUTE')
+                 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                WHERE n.nspname = 'identity' AND p.proname IN ('record_user_event', 'purge_user_events')"""
+        ).fetchall()
+    found = {name: (definer, config, public, app) for name, definer, config, public, app in rows}
+    assert found == {
+        "record_user_event": (True, ["search_path=pg_catalog, pg_temp"], False, False),
+        "purge_user_events": (True, ["search_path=pg_catalog, pg_temp"], False, True),
+    }
