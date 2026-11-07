@@ -199,3 +199,14 @@ async def record_failure(conn: AsyncConnection[Any], keys: list[str], *, window_
 
 async def clear_failures(conn: AsyncConnection[Any], keys: list[str]) -> None:
     await conn.execute("DELETE FROM identity.signin_attempts WHERE key = ANY(%s)", (keys,))
+
+
+async def retry_after(conn: AsyncConnection[Any], key: str, *, window_seconds: int) -> int:
+    """Whole seconds until the current window of `key` ends (at least 1): the `Retry-After` of a limited request."""
+    cur = await conn.execute(
+        """SELECT ceil(extract(epoch FROM a.window_start + make_interval(secs => %s) - now()))::int
+             FROM identity.signin_attempts a WHERE a.key = %s""",
+        (window_seconds, key[:400]),
+    )
+    row = await cur.fetchone()
+    return max(1, row[0]) if row is not None and row[0] is not None else 1

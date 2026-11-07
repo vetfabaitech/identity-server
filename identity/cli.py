@@ -12,6 +12,7 @@ arguments, so they stay out of shell history and process listings.
     identity-admin seed-test-accounts          # IDENTITY_TEST_ACCOUNTS_PASSWORD on every listed test account
     identity-admin revoke-sessions EMAIL
     identity-admin service-secret              # a hand-off redemption secret and its hash for IDENTITY_SERVICES
+    identity-admin purge-user-events           # drop user-feed events older than IDENTITY_USER_EVENTS_RETENTION_DAYS
 """
 
 import argparse
@@ -26,7 +27,7 @@ from typing import Any, cast
 
 import psycopg
 
-from identity import sessions, store
+from identity import sessions, store, user_feed
 from identity.config import Settings, get_settings
 from identity.db import RUNTIME_ROLE
 from identity.keys import KeyRing, NoSigningKeyError, generate_key
@@ -35,6 +36,7 @@ from identity.store import STATUSES, Status
 from identity.tokens import mint_access_token
 
 OK, NOT_FOUND, REFUSED = 0, 1, 2
+PURGE_BATCH = 10_000
 
 
 class CliError(Exception):
@@ -157,6 +159,17 @@ async def revoke_sessions(settings: Settings, args: argparse.Namespace) -> None:
     print(f"{revoked} session(s) of {user.email} signed out.")
 
 
+async def purge_user_events(settings: Settings, _: argparse.Namespace) -> None:
+    """Deletes every user event older than IDENTITY_USER_EVENTS_RETENTION_DAYS, in batches (the newest always stays).
+    The feed also purges on its own, an hour apart; this is for an operator who wants it done now."""
+    days = settings.user_events_retention_days
+    total = 0
+    async with _connection(settings) as conn:
+        while removed := await user_feed.purge(conn, days, PURGE_BATCH):
+            total += removed
+    print(f"Purged {total} user event(s) older than {days} days.")
+
+
 async def service_secret(_: Settings, __: argparse.Namespace) -> None:
     """A redemption secret for a service and the hash that goes in IDENTITY_SERVICES. Touches no database."""
     secret = secrets.token_urlsafe(32)
@@ -195,6 +208,9 @@ def _parser() -> argparse.ArgumentParser:
     p = sub.add_parser("revoke-sessions", help="sign an account out everywhere")
     p.add_argument("email")
     p.set_defaults(run=revoke_sessions)
+    sub.add_parser("purge-user-events", help="delete user-feed events past the retention").set_defaults(
+        run=purge_user_events
+    )
     return parser
 
 

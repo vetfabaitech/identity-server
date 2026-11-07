@@ -229,11 +229,16 @@ def busy_page(request: Request, target: Target, state: str | None, email: str = 
 
 def busy_response(request: Request) -> Response:
     """Overload answer for any route when the database cannot hand out a connection in time (app.py): the same
-    503 and Retry-After as a full sign-in queue, as JSON for the renewal endpoint and as a page everywhere else."""
+    503 and Retry-After as a full sign-in queue, as JSON for the renewal endpoint and the service feed (in the feed's
+    error shape) and as a page everywhere else."""
     headers = {"Retry-After": str(RETRY_AFTER_SECONDS)}
     if request.url.path.startswith("/auth/session/"):
         cors = cors_headers(request, _settings(request)) or {}
         return JSONResponse({"error": "busy"}, status_code=503, headers={**headers, **cors})
+    if request.url.path.startswith("/auth/service/"):
+        return JSONResponse(
+            {"detail": {"code": "busy"}}, status_code=503, headers={**headers, "Cache-Control": "no-store"}
+        )
     page = render(request, "message.html", 503, title="Sign-in is busy", message=BUSY)
     page.headers.update(headers)
     return page
