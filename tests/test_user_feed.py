@@ -247,7 +247,16 @@ async def test_a_document_is_signed_with_the_published_access_token_key(
     assert header == {"alg": "RS256", "typ": "user-feed+jwt", "kid": KeyRing.load(keys_dir).signing_kid}
     assert claims["iss"] == ISSUER and claims["aud"] == "reports"
     assert claims["exp"] - claims["iat"] == 300
-    assert set(claims) == {"iss", "aud", "iat", "exp", "jti", "kind", "events", "next", "head", "oldest"}
+    common = {"iss", "aud", "iat", "exp", "jti", "kind"}
+    assert set(claims) == common | {"after", "limit", "events", "next", "head", "oldest"}
+    listing = await verify_document(
+        client, await client.get("/auth/service/users", headers=basic("reports")), audience="reports"
+    )
+    assert set(listing) == common | {"after", "limit", "users", "next", "head"}
+    one = await verify_document(
+        client, await client.get(f"/auth/service/users/{uuid.uuid4()}", headers=basic("reports")), audience="reports"
+    )
+    assert set(one) == common | {"user"}
     second = await client.get("/auth/service/user-events", headers=basic("reports"))
     assert (await verify_document(client, second, audience="reports"))["jti"] != claims["jti"]
 
@@ -570,6 +579,56 @@ async def test_the_list_takes_up_to_1000_users_and_500_by_default(client: httpx.
     count = owner_conn.execute("SELECT count(*) FROM public.users").fetchone()[0]
     assert len((await users(client, limit=1000))["users"]) == min(count, 1000)
     assert len((await users(client))["users"]) == min(count, 500)
+
+
+# --------------------------------------------------------------------------- a document echoes the request it answers
+
+
+async def test_an_events_document_echoes_after_and_the_effective_limit(
+    client: httpx.AsyncClient, owner_conn: Any, make_user: Callable[..., User]
+) -> None:
+    """A still-valid document cannot be replayed as the answer to another request: the consumer compares these."""
+    default = await events(client)
+    assert (default["after"], default["limit"]) == (0, 200)
+    base = head(owner_conn)
+    make_user()
+    explicit = await events(client, after=base, limit=7)
+    assert (explicit["after"], explicit["limit"]) == (base, 7)
+    beyond = head(owner_conn) + 5
+    empty = await events(client, after=beyond, limit=3)
+    assert (empty["after"], empty["limit"], empty["events"], empty["next"]) == (beyond, 3, [], beyond)
+
+
+async def test_a_users_document_echoes_after_and_the_effective_limit(
+    client: httpx.AsyncClient, owner_conn: Any, make_user: Callable[..., User]
+) -> None:
+    for _ in range(3):
+        make_user()
+    first = await users(client)
+    assert (first["after"], first["limit"]) == (None, 500)
+    ids = [row[0] for row in owner_conn.execute("SELECT id::text FROM public.users ORDER BY id").fetchall()]
+    start = ids[-3]
+    page = await users(client, after=start, limit=5)
+    assert (page["after"], page["limit"]) == (start, 5)
+    upper = await users(client, after=start.upper(), limit=5)
+    assert upper["after"] == start  # echoed in canonical (lowercase) form
+
+
+async def test_a_users_page_is_strictly_ascending_and_after_the_cursor(
+    client: httpx.AsyncClient, make_user: Callable[..., User]
+) -> None:
+    for _ in range(5):
+        make_user()
+    cursor: str | None = None
+    for _ in range(4):
+        page = await users(client, **({"after": cursor} if cursor else {}), limit=3)
+        ids = [UUID(u["id"]) for u in page["users"]]
+        assert all(a < b for a, b in zip(ids, ids[1:], strict=False))  # strictly ascending, as Postgres orders uuids
+        if cursor is not None:
+            assert all(i > UUID(cursor) for i in ids)
+        if page["next"] is None:
+            break
+        cursor = page["next"]
 
 
 # --------------------------------------------------------------------------- rate limit

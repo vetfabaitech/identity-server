@@ -11,6 +11,8 @@ purge function to drop old events, and signs what it read.
   it came with: every change up to `head` is in the page, every later one has a higher seq.
 * A document is a compact JWS signed RS256 with the access-token key (published in the JWKS) under `typ:
   user-feed+jwt`, so it can never pass for an access token, nor an access token for a document.
+* A page document echoes the request it answers (`after` and the effective `limit`), so a still-valid document cannot
+  be replayed as the answer to a different request; a `user` document names its id inside `user`.
 """
 
 import time
@@ -92,6 +94,8 @@ async def read_events(conn: AsyncConnection[Any], after: int, limit: int) -> dic
         for seq, kind, occurred_at, user_id, version, email, display_name, status in rows
     ]
     return {
+        "after": after,
+        "limit": limit,
         "events": events,
         "next": events[-1]["seq"] if events else after,
         "head": head,
@@ -121,7 +125,13 @@ async def read_users(conn: AsyncConnection[Any], after: UUID | None, limit: int)
         rows = await cur.fetchall()
     assert bounds is not None
     page = [live(*row) for row in rows[:limit]]
-    return {"users": page, "next": page[-1]["id"] if len(rows) > limit else None, "head": bounds[0]}
+    return {
+        "after": None if after is None else str(after),
+        "limit": limit,
+        "users": page,
+        "next": page[-1]["id"] if len(rows) > limit else None,
+        "head": bounds[0],
+    }
 
 
 async def purge(conn: AsyncConnection[Any], retention_days: int, max_rows: int) -> int:
