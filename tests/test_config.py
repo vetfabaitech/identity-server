@@ -136,3 +136,24 @@ def test_oauth_redirect_uri_follows_the_mounted_route(issuer: str) -> None:
     parts = urlsplit(issuer)
     origin = f"{parts.scheme}://{parts.netloc}"
     assert make(issuer=issuer).oauth_redirect_uri("github") == f"{origin}/auth/oauth/github/callback"
+
+
+def test_the_user_feed_is_off_by_default() -> None:
+    settings = make()
+    assert settings.user_feed_service_ids == frozenset()
+    assert (settings.user_feed_rate_limit, settings.user_events_retention_days) == (1200, 30)
+
+
+def test_user_feed_services_are_service_ids() -> None:
+    settings = make(user_feed_services=" lms , reports,lms,")
+    assert settings.user_feed_services == "lms,reports"
+    assert settings.user_feed_service_ids == frozenset({"lms", "reports"})
+    for bad in ("LMS", "lms;drop", "https://lms.example", "a", "lms ide"):
+        with pytest.raises(ValidationError, match="IDENTITY_USER_FEED_SERVICES"):
+            make(user_feed_services=bad)
+
+
+def test_user_events_are_kept_at_least_seven_days() -> None:
+    assert make(user_events_retention_days=7).user_events_retention_days == 7
+    with pytest.raises(ValidationError):
+        make(user_events_retention_days=6)

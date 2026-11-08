@@ -9,6 +9,7 @@ import pytest
 from psycopg import sql
 
 from tests.conftest import (
+    IDENTITY_DIR,
     LMS_USERS_STUB,
     LOGIN_PASSWORD,
     LOGIN_ROLE,
@@ -202,6 +203,8 @@ def test_every_identity_table_has_row_level_security(database: str) -> None:
         "handoff_tickets",
         "services",
         "developer_grants",
+        "user_versions",
+        "user_events",
         "users",
     }
     for name, rls, policies in rows:
@@ -295,3 +298,207 @@ def test_0003_is_a_no_op_without_the_ide_columns(scratch: str) -> None:
     assert "oauth_accounts" in tables(url)
     alembic(url, "downgrade", "0002")
     alembic(url, "upgrade", "head")
+
+
+# --------------------------------------------------------------------------- 0006: the user feed (CONTRACT.md, "User feed")
+
+FEED_TABLES = {"user_versions", "user_events"}
+FEED_TRIGGERS = {"identity_user_event_insert", "identity_user_event_update", "identity_user_event_delete"}
+FEED_FUNCTIONS = {"record_user_event", "purge_user_events"}
+
+
+def feed_objects(url: str) -> tuple[set[str], set[str], set[str]]:
+    """(identity tables of the feed, triggers on public.users, identity functions of the feed) that exist."""
+    with psycopg.connect(url) as conn:
+        triggers = conn.execute(
+            "SELECT tgname FROM pg_trigger WHERE tgrelid = 'public.users'::regclass AND NOT tgisinternal"
+        ).fetchall()
+        functions = conn.execute(
+            """SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                WHERE n.nspname = 'identity'"""
+        ).fetchall()
+    return tables(url) & FEED_TABLES, {r[0] for r in triggers}, {r[0] for r in functions} & FEED_FUNCTIONS
+
+
+def test_0006_backfills_every_user_at_version_1_and_rolls_back_cleanly(scratch: str) -> None:
+    url = db_url(scratch)
+    alembic(url, "upgrade", "0005")
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute("INSERT INTO public.users (email, display_name) VALUES ('a@x.test', 'A'), ('b@x.test', 'B')")
+    alembic(url, "upgrade", "head")
+    assert feed_objects(url) == (FEED_TABLES, FEED_TRIGGERS, FEED_FUNCTIONS)
+    with psycopg.connect(url, autocommit=True) as conn:
+        assert conn.execute(
+            """SELECT count(*) FROM public.users u JOIN identity.user_versions v ON v.user_id = u.id
+                WHERE v.version = 1"""
+        ).fetchone() == (2,)
+        assert conn.execute("SELECT count(*) FROM identity.user_events").fetchone() == (0,)  # a backfill is no event
+        conn.execute("UPDATE public.users SET status = 'approved' WHERE email = 'a@x.test'")
+        assert conn.execute("SELECT version, type FROM identity.user_events").fetchall() == [(2, "user.updated")]
+    alembic(url, "downgrade", "0005")
+    assert feed_objects(url) == (set(), set(), set())
+    with psycopg.connect(url, autocommit=True) as conn:  # the users table works exactly as before
+        conn.execute("UPDATE public.users SET display_name = 'A2' WHERE email = 'a@x.test'")
+        conn.execute("DELETE FROM public.users WHERE email = 'b@x.test'")
+        conn.execute("INSERT INTO public.users (email, display_name) VALUES ('c@x.test', 'C')")
+    alembic(url, "upgrade", "head")
+    with psycopg.connect(url) as conn:
+        assert conn.execute("SELECT count(*), min(version), max(version) FROM identity.user_versions").fetchone() == (
+            2,
+            1,
+            1,
+        )
+
+
+def test_0006_records_changes_on_the_ide_users_table(scratch: str) -> None:
+    """The IDE's own table (shared, SI-2): its profile columns change silently, its admin console's status changes
+    are events."""
+    url = db_url(scratch)
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute(cast(LiteralString, IDE_USERS))
+        conn.execute(
+            """INSERT INTO public.users (oauth_provider, oauth_id, username, display_name, email, status)
+               VALUES ('github', '1001', 'octo', 'Octo', 'octo@x.test', 'pending')"""
+        )
+    alembic(url, "upgrade", "head")
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute("UPDATE public.users SET username = 'octo2', oauth_id = '1002' WHERE email = 'octo@x.test'")
+        conn.execute("UPDATE public.users SET status = 'approved', role = 'admin' WHERE email = 'octo@x.test'")
+        rows = conn.execute("SELECT version, type, email, display_name, status FROM identity.user_events").fetchall()
+    assert rows == [(2, "user.updated", "octo@x.test", "Octo", "approved")]
+
+
+def test_the_service_role_only_reads_the_feed_and_purges_through_the_function(database: str) -> None:
+    with _as_login(database) as conn:
+        conn.execute("SET ROLE identity_app")
+        conn.execute("SELECT count(*) FROM identity.user_events")
+        conn.execute("SELECT count(*) FROM identity.user_versions")
+        conn.execute("SELECT identity.purge_user_events(30, 1)")
+        for statement in (
+            "INSERT INTO identity.user_events (user_id, version, type) VALUES (gen_random_uuid(), 1, 'user.created')",
+            "UPDATE identity.user_events SET version = version + 1",
+            "DELETE FROM identity.user_events",
+            "INSERT INTO identity.user_versions (user_id, version) VALUES (gen_random_uuid(), 1)",
+            "UPDATE identity.user_versions SET version = version + 1",
+            "DELETE FROM identity.user_versions",
+        ):
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                conn.execute(cast(LiteralString, statement))
+
+
+def test_the_feed_functions_are_definer_functions_with_a_fixed_search_path(database: str) -> None:
+    with psycopg.connect(db_url(database)) as conn:
+        rows = conn.execute(
+            """SELECT p.proname, p.prosecdef, p.proconfig, has_function_privilege('public', p.oid, 'EXECUTE'),
+                      has_function_privilege('identity_app', p.oid, 'EXECUTE')
+                 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                WHERE n.nspname = 'identity' AND p.proname IN ('record_user_event', 'purge_user_events')"""
+        ).fetchall()
+    found = {name: (definer, config, public, app) for name, definer, config, public, app in rows}
+    assert found == {
+        "record_user_event": (True, ["search_path=pg_catalog, pg_temp"], False, False),
+        "purge_user_events": (True, ["search_path=pg_catalog, pg_temp"], False, True),
+    }
+
+
+# --------------------------------------------------------------------------- the Supabase SQL-editor scripts (deploy/supabase-identity*.sql)
+
+DEPLOY = IDENTITY_DIR / "deploy"
+
+
+def run_script(url: str, name: str) -> None:
+    """Runs a whole file as one simple query, as the Supabase SQL editor does: an error stops everything after it."""
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute(cast(LiteralString, (DEPLOY / name).read_text()))
+
+
+def installed_version(url: str) -> str:
+    with psycopg.connect(url) as conn:
+        row = conn.execute("SELECT version_num FROM identity.alembic_version").fetchone()
+    assert row is not None
+    return row[0]
+
+
+def offline(*args: str) -> str:
+    """What `alembic <args> --sql` renders, normalised the way the committed files are."""
+    import io
+
+    from alembic import command
+    from alembic.config import Config
+
+    buffer = io.StringIO()
+    config = Config(str(IDENTITY_DIR / "alembic.ini"), output_buffer=buffer)
+    config.set_main_option("script_location", str(IDENTITY_DIR / "migrations"))
+    config.cmd_opts = type("Opts", (), {"x": ["url=postgresql://x@localhost/x"]})()  # pyright: ignore[reportAttributeAccessIssue]
+    getattr(command, args[0])(config, *args[1:], sql=True)
+    return buffer.getvalue().replace("END $$;;", "END $$;").rstrip("\n") + "\n"
+
+
+def test_the_committed_scripts_are_what_alembic_renders() -> None:
+    """Regenerate deploy/supabase-identity*.sql after changing a migration (their headers say how)."""
+    from importlib import util
+
+    assert offline("upgrade", "head") in (DEPLOY / "supabase-identity.sql").read_text()
+    assert offline("downgrade", "0006:0005") in (DEPLOY / "supabase-identity-rollback-0006.sql").read_text()
+    assert offline("downgrade", "0005:0003") in (DEPLOY / "supabase-identity-rollback.sql").read_text()
+    spec = util.spec_from_file_location("m0006", IDENTITY_DIR / "migrations/versions/0006_user_feed.py")
+    assert spec is not None and spec.loader is not None
+    module = util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.UPGRADE_SQL.strip("\n") in (DEPLOY / "supabase-identity-upgrade.sql").read_text()
+
+
+@pytest.mark.parametrize("start", ["0001", "0002", "0003", "0004", "0005"])
+def test_the_supabase_upgrade_script_brings_any_version_to_0006(scratch: str, start: str) -> None:
+    url = db_url(scratch)
+    alembic(url, "upgrade", start)
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute("INSERT INTO public.users (email, display_name, status) VALUES ('a@x.test', 'A', 'approved')")
+    run_script(url, "supabase-identity-upgrade.sql")
+    assert installed_version(url) == "0006"
+    assert feed_objects(url) == (FEED_TABLES, FEED_TRIGGERS, FEED_FUNCTIONS)
+    assert tables(url) >= {"services", "developer_grants", "handoff_tickets", "oauth_accounts"}
+    run_script(url, "supabase-identity-upgrade.sql")  # again: a no-op
+    with psycopg.connect(url, autocommit=True) as conn:
+        assert conn.execute("SELECT version FROM identity.user_versions").fetchall() == [(1,)]
+        conn.execute("UPDATE public.users SET status = 'suspended'")
+        assert conn.execute("SELECT version, type FROM identity.user_events").fetchall() == [(2, "user.updated")]
+    alembic(url, "downgrade", "0005")  # alembic agrees with what the script left behind
+    alembic(url, "upgrade", "head")
+
+
+def test_the_supabase_install_script_on_an_ide_project(scratch: str) -> None:
+    url = db_url(scratch)
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute(cast(LiteralString, IDE_USERS))
+        conn.execute(
+            """INSERT INTO public.users (oauth_provider, oauth_id, username, display_name, email, status)
+               VALUES ('github', '1001', 'octo', 'Octo', 'octo@x.test', 'approved')"""
+        )
+    run_script(url, "supabase-identity.sql")
+    assert installed_version(url) == "0006"
+    assert feed_objects(url) == (FEED_TABLES, FEED_TRIGGERS, FEED_FUNCTIONS)
+    with psycopg.connect(url, autocommit=True) as conn:
+        assert conn.execute("SELECT version FROM identity.user_versions").fetchall() == [(1,)]
+        conn.execute("UPDATE public.users SET status = 'suspended' WHERE username = 'octo'")
+        assert conn.execute("SELECT version, status FROM identity.user_events").fetchall() == [(2, "suspended")]
+    with pytest.raises(psycopg.errors.RaiseException, match="already installed"):
+        run_script(url, "supabase-identity.sql")
+
+
+def test_the_supabase_rollback_scripts_undo_one_step_each_and_refuse_the_wrong_version(scratch: str) -> None:
+    url = db_url(scratch)
+    alembic(url, "upgrade", "head")
+    with pytest.raises(psycopg.errors.RaiseException, match="rollback-0006"):
+        run_script(url, "supabase-identity-rollback.sql")  # would drop the registry under a 0006 schema
+    assert installed_version(url) == "0006" and "services" in tables(url)
+    run_script(url, "supabase-identity-rollback-0006.sql")
+    assert installed_version(url) == "0005"
+    assert feed_objects(url) == (set(), set(), set())
+    with pytest.raises(psycopg.errors.RaiseException, match="removes migration 0006"):
+        run_script(url, "supabase-identity-rollback-0006.sql")
+    run_script(url, "supabase-identity-rollback.sql")
+    assert installed_version(url) == "0003"
+    assert not tables(url) & {"services", "developer_grants", "handoff_tickets"}
+    run_script(url, "supabase-identity-upgrade.sql")
+    assert installed_version(url) == "0006"

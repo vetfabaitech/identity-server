@@ -26,6 +26,7 @@ from identity.web.oauth_routes import router as oauth_router
 from identity.web.portal_routes import router as portal_router
 from identity.web.routes import busy_response, router
 from identity.web.security import BodyLimit, security_headers
+from identity.web.service_routes import router as service_router
 
 log = logging.getLogger("identity")
 HERE = Path(__file__).resolve().parent
@@ -77,6 +78,8 @@ def create_app(
     app.state.templates = Jinja2Templates(directory=HERE / "templates")
     # Bounds concurrent password checks (perf design §10); see routes.login().
     app.state.verify_slots = asyncio.Semaphore(settings.max_concurrent_verifies)
+    # When this instance last purged expired user events (web/service_routes.py); None: on the first events request.
+    app.state.user_feed_purged_at = None
 
     @app.middleware("http")
     async def add_security_headers(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
@@ -103,5 +106,6 @@ def create_app(
     app.include_router(handoff_router)
     app.include_router(admin_router)
     app.include_router(portal_router)
+    app.include_router(service_router)
     app.mount("/auth/static", StaticFiles(directory=HERE / "static"), name="static")
     return app

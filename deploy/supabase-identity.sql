@@ -1,7 +1,7 @@
 -- =====================================================================================================================
 -- Vetfab identity service: database objects for an EXISTING Supabase project (the one the IDE uses).
 --
--- Generated from migrations 0001-0005 with:   alembic upgrade head --sql      (no database is contacted to make it)
+-- Generated from migrations 0001-0006 with:   alembic upgrade head --sql      (no database is contacted to make it)
 -- Regenerate after a new migration:           IDENTITY_DATABASE_URL=postgresql://x@localhost/x alembic upgrade head --sql
 --
 -- USE THIS ONLY IF the project has NO `identity` schema yet. If it does (an earlier identity service created it on the same
@@ -16,13 +16,17 @@
 --     (an account made by the identity service has none of them until the IDE's onboarding sets a username); adds
 --     password_hash, email_verified_at, last_login_at; a unique index on lower(email); a row-level-security policy for
 --     the identity service's role. Existing GitHub/Google links are copied into identity.oauth_accounts.
+--     Three triggers (the user feed, migration 0006): every new or deleted account and every change to email,
+--     display_name or status, whoever makes it (the IDE included), is recorded in identity.user_events.
 --   * a new schema `identity`: refresh_tokens, signin_attempts, audit, oauth_accounts, handoff_tickets, services,
---     developer_grants, alembic_version. RLS is on for every table; the role `identity_app` is the only one with a policy.
+--     developer_grants, user_versions (every existing account at version 1), user_events, alembic_version. RLS is on for
+--     every table; the role `identity_app` is the only one with a policy.
 --   * the role `identity_app` (NOLOGIN) is created. The identity service connects as a login that is a member of it
 --     (deploy/provision-role.sql), or, for local testing only, as the project's `postgres` user.
 --
--- UNDO: deploy/supabase-identity-rollback.sql removes only the newest additions (migrations 0004-0005: hand-off tickets,
---       the service registry, developer grants). Removing everything is `alembic downgrade base`.
+-- UNDO: deploy/supabase-identity-rollback-0006.sql removes only the user feed (migration 0006); after it,
+--       deploy/supabase-identity-rollback.sql removes migrations 0004-0005 (hand-off tickets, the service registry,
+--       developer grants). Removing everything is `alembic downgrade base`.
 -- =====================================================================================================================
 
 -- 1. Safety checks. Nothing below runs if any of these fails.
@@ -56,7 +60,7 @@ BEGIN
   END IF;
 END $$;
 
--- 3. The identity service's schema and tables (migrations 0001 -> 0005).
+-- 3. The identity service's schema and tables (migrations 0001 -> 0006).
 CREATE SCHEMA IF NOT EXISTS identity;
 
 BEGIN;
@@ -281,10 +285,108 @@ ALTER TABLE identity.audit ADD CONSTRAINT audit_action_check CHECK (action IN (
 
 UPDATE identity.alembic_version SET version_num='0005' WHERE identity.alembic_version.version_num = '0004';
 
+-- Running upgrade 0005 -> 0006
+
+-- No user write may slip in between the backfill and the triggers.
+LOCK TABLE public.users IN SHARE ROW EXCLUSIVE MODE;
+
+CREATE TABLE identity.user_versions (
+  user_id uuid PRIMARY KEY,
+  version bigint NOT NULL CHECK (version >= 1)
+);
+INSERT INTO identity.user_versions (user_id, version) SELECT id, 1 FROM public.users;
+ALTER TABLE identity.user_versions ENABLE ROW LEVEL SECURITY;
+CREATE POLICY user_versions_identity_service ON identity.user_versions FOR SELECT TO identity_app USING (true);
+GRANT SELECT ON identity.user_versions TO identity_app;
+
+CREATE TABLE identity.user_events (
+  seq bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  user_id uuid NOT NULL,
+  version bigint NOT NULL CHECK (version >= 1),
+  type text NOT NULL CHECK (type IN ('user.created', 'user.updated', 'user.deleted')),
+  occurred_at timestamptz NOT NULL DEFAULT now(),
+  email text,
+  display_name text,
+  status text
+);
+CREATE INDEX user_events_occurred_at_idx ON identity.user_events (occurred_at, seq);
+ALTER TABLE identity.user_events ENABLE ROW LEVEL SECURITY;
+CREATE POLICY user_events_identity_service ON identity.user_events FOR SELECT TO identity_app USING (true);
+GRANT SELECT ON identity.user_events TO identity_app;
+
+CREATE FUNCTION identity.record_user_event() RETURNS trigger
+  LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  next_version bigint;
+BEGIN
+  -- Serialises seq allocation and commit among user-identity writes, so events become visible in seq order.
+  PERFORM pg_catalog.pg_advisory_xact_lock(5279438479318730070);
+  IF TG_OP = 'DELETE' THEN
+    INSERT INTO identity.user_versions AS v (user_id, version) VALUES (OLD.id, 2)
+      ON CONFLICT (user_id) DO UPDATE SET version = v.version + 1
+      RETURNING v.version INTO next_version;
+    INSERT INTO identity.user_events (user_id, version, type) VALUES (OLD.id, next_version, 'user.deleted');
+  ELSE
+    -- A new id starts at 1; a user with no row yet (written while the triggers were off) was implicitly at 1.
+    INSERT INTO identity.user_versions AS v (user_id, version)
+      VALUES (NEW.id, CASE WHEN TG_OP = 'INSERT' THEN 1 ELSE 2 END)
+      ON CONFLICT (user_id) DO UPDATE SET version = v.version + 1
+      RETURNING v.version INTO next_version;
+    INSERT INTO identity.user_events (user_id, version, type, email, display_name, status)
+      VALUES (NEW.id, next_version, CASE WHEN TG_OP = 'INSERT' THEN 'user.created' ELSE 'user.updated' END,
+              NEW.email, NEW.display_name, NEW.status);
+  END IF;
+  RETURN NULL;
+END
+$fn$;
+REVOKE ALL ON FUNCTION identity.record_user_event() FROM PUBLIC;
+
+CREATE TRIGGER identity_user_event_insert AFTER INSERT ON public.users
+  FOR EACH ROW EXECUTE FUNCTION identity.record_user_event();
+CREATE TRIGGER identity_user_event_update AFTER UPDATE OF email, display_name, status ON public.users
+  FOR EACH ROW
+  WHEN (OLD.email IS DISTINCT FROM NEW.email OR OLD.display_name IS DISTINCT FROM NEW.display_name
+        OR OLD.status IS DISTINCT FROM NEW.status)
+  EXECUTE FUNCTION identity.record_user_event();
+CREATE TRIGGER identity_user_event_delete AFTER DELETE ON public.users
+  FOR EACH ROW EXECUTE FUNCTION identity.record_user_event();
+
+CREATE FUNCTION identity.purge_user_events(retention_days integer, max_rows integer) RETURNS bigint
+  LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  head bigint;
+  through bigint;
+  removed bigint;
+BEGIN
+  SELECT max(e.seq) INTO head FROM identity.user_events e;
+  SELECT max(old.seq) INTO through FROM (
+    SELECT e.seq FROM identity.user_events e
+     WHERE e.occurred_at < pg_catalog.now() - pg_catalog.make_interval(days => GREATEST(retention_days, 7))
+     ORDER BY e.occurred_at, e.seq LIMIT GREATEST(max_rows, 1)) old;
+  IF through IS NULL THEN
+    RETURN 0;  -- nothing has expired (LEAST below would ignore the NULL)
+  END IF;
+  -- A prefix by seq, and never the newest event: max(seq) stays the head, min(seq) shows a purged gap.
+  through := LEAST(through, head - 1);
+  IF through < 1 THEN
+    RETURN 0;
+  END IF;
+  DELETE FROM identity.user_events e WHERE e.seq <= through;
+  GET DIAGNOSTICS removed = ROW_COUNT;
+  RETURN removed;
+END
+$fn$;
+REVOKE ALL ON FUNCTION identity.purge_user_events(integer, integer) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION identity.purge_user_events(integer, integer) TO identity_app;;
+
+UPDATE identity.alembic_version SET version_num='0006' WHERE identity.alembic_version.version_num = '0005';
+
 COMMIT;
 
 
 
--- 4. Check (run separately afterwards): expect 8 tables and version 0005.
+-- 4. Check (run separately afterwards): expect 10 tables and version 0006.
 --    select table_name from information_schema.tables where table_schema = 'identity' order by 1;
 --    select version_num from identity.alembic_version;

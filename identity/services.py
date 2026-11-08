@@ -62,6 +62,11 @@ def is_localhost_dev_origin(origin: str) -> bool:
     return match is not None and 1024 <= int(match[1]) <= 65535
 
 
+def is_service_id(value: str) -> bool:
+    """A well-formed registry id: lowercase letters, digits and '-', 2-32 characters, starting with a letter."""
+    return _ID.fullmatch(value) is not None
+
+
 class RegistryError(ValueError):
     """A registry entry is malformed or unsafe. The message names the entry and the field."""
 

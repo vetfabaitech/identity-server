@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from identity.services import Registry, RegistryError, parse_registry
+from identity.services import Registry, RegistryError, is_service_id, parse_registry
 
 MIN_PASSPHRASE_LENGTH = 12
 
@@ -106,6 +106,15 @@ class Settings(BaseSettings):
     # Mutations per administrator per rate-limit window on the developer portal API; secret operations get a sixth.
     admin_rate_limit: int = Field(default=60, ge=6, le=1000)
 
+    # The signed user feed (CONTRACT.md, "User feed"; identity/web/service_routes.py): comma-separated ids of registry
+    # services that may read it, each authenticating with its registry secret and active. Empty switches the feed off.
+    user_feed_services: str = ""
+    # Feed requests per service in each 600-second window, before 429 with Retry-After (contract: 1200).
+    user_feed_rate_limit: int = Field(default=1200, ge=10, le=100_000)
+    # How long user events are kept before they may be purged. A consumer that falls further behind reconciles from
+    # the user list. At least 7 days, so a product down over a long weekend does not have to reconcile.
+    user_events_retention_days: int = Field(default=30, ge=7, le=3650)
+
     # Developing against this deployed service from localhost (like a GitHub OAuth app's http://localhost callback). Off by
     # default. When on, an administrator may activate a `local` service whose base_url is exactly
     # http://localhost:<port> or http://127.0.0.1:<port>; it receives sign-ins (GET /auth/login) and nothing else: no
@@ -136,6 +145,20 @@ class Settings(BaseSettings):
         if not origins:
             raise ValueError("IDENTITY_APP_ORIGINS must list at least one origin.")
         return ",".join(origins)
+
+    @field_validator("user_feed_services")
+    @classmethod
+    def _service_ids(cls, value: str) -> str:
+        ids: list[str] = []
+        for raw in value.split(","):
+            service_id = raw.strip()
+            if not service_id:
+                continue
+            if not is_service_id(service_id):
+                raise ValueError(f"IDENTITY_USER_FEED_SERVICES must list service ids (got {service_id!r}).")
+            if service_id not in ids:
+                ids.append(service_id)
+        return ",".join(ids)
 
     @model_validator(mode="after")
     def _fail_closed(self) -> "Settings":
@@ -169,6 +192,10 @@ class Settings(BaseSettings):
     @property
     def app_origin_list(self) -> list[str]:
         return self.app_origins.split(",")
+
+    @property
+    def user_feed_service_ids(self) -> frozenset[str]:
+        return frozenset(s for s in self.user_feed_services.split(",") if s)
 
     @property
     def cors_origin_list(self) -> list[str]:
