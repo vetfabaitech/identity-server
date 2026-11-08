@@ -8,8 +8,8 @@ sign in, receive a short-lived access token, and check it against the public key
 token looks like is fixed in [CONTRACT.md](CONTRACT.md); read it before changing tokens, keys or routes.
 
 Every route is under `/auth`. A sign-in ends with a 303 to `<product origin>/handoff#token=…&redirect=…&state=…`.
-Tokens carry only the user id: status, roles and organisations stay in each product, which re-reads them from the
-shared `users` table.
+Tokens carry only the user id: each product re-reads status from its own copy of the user, which it keeps current with
+the signed [user feed](#user-feed), and roles and organisations stay in each product.
 
 Adding a product (backend + browser adapter, demo, localhost guide): [docs/adapter.md](docs/adapter.md). Moving a
 signed-in person between products without a second sign-in (one-time tickets, service registry, shared switcher):
@@ -20,6 +20,7 @@ signed-in person between products without a second sign-in (one-time tickets, se
 | `GET /auth/services` | The services this person may open (registry, filtered by role). Credentialed CORS for registered origins |
 | `POST /auth/handoff` | A signed-in browser on a registered service gets a one-time ticket for another registered service |
 | `POST /auth/handoff/redeem` | The destination's backend trades a ticket for the person's identity (HTTP Basic: service id and secret) |
+| `GET /auth/service/user-events`, `GET /auth/service/users/{id}`, `GET /auth/service/users` | The signed user feed: a product's backend keeps its own copy of email, name and status (HTTP Basic: service id and secret; [User feed](#user-feed)) |
 
 Registering and managing services (a web page for administrators and delegated developers, persistent in the database, one-time
 secrets, validation, audit): [docs/developer-portal.md](docs/developer-portal.md), at `/developer/services` (API under `/auth/admin`).
@@ -67,6 +68,9 @@ Sessions: the refresh token lives in an HttpOnly cookie on `Path=/auth`, is stor
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google OAuth client (type "Web application"); same rule |
 | `ADMIN_EMAILS` | Comma-separated; these accounts become approved administrators on GitHub or Google sign-in |
 | `ALLOW_LOCALHOST_DEV_ORIGINS` | `false` (default). `true` lets an administrator activate a `local` service at exactly `http://localhost:<port>` or `http://127.0.0.1:<port>`, so a developer can run a service on their machine against this deployed identity (sign-in redirect only: no CORS, no silent renewal, no hand-off). Refused in production. See [developer-portal.md](docs/developer-portal.md) §14 |
+| `USER_FEED_SERVICES` | Empty (default: the user feed is off). Comma-separated registry service ids whose backends may read the [user feed](#user-feed); each must also be active |
+| `USER_FEED_RATE_LIMIT` | 1200: feed requests per service per 600 seconds before 429 with `Retry-After` |
+| `USER_EVENTS_RETENTION_DAYS` | 30 (at least 7): how long user events are kept before they are purged |
 
 ### OAuth callbacks to register
 
@@ -101,6 +105,7 @@ identity-admin set-status EMAIL suspended                   # suspended/rejected
 identity-admin token EMAIL                     # 15-minute token for scripts (content import); audited
 identity-admin seed-test-accounts              # test password on the listed test accounts (not in production)
 identity-admin revoke-sessions EMAIL
+identity-admin purge-user-events               # drop user events past USER_EVENTS_RETENTION_DAYS now (the feed also does it hourly)
 ```
 
 ## Database
@@ -111,6 +116,39 @@ Migration `0003` copies existing GitHub/Google links from the IDE's `users.oauth
 they exist. On the shared database, run the IDE repo's `backend/supabase_migration_shared_identity.sql` **before**
 this service's migrations: it makes the IDE columns this service does not fill (username, oauth_provider, oauth_id)
 nullable.
+
+Migration `0006` is the [user feed](#user-feed)'s change capture: `identity.user_versions` (every existing user at
+version 1), `identity.user_events`, and three triggers on `public.users` that record every new or deleted account and
+every real change to `email`, `display_name` or `status`, whoever writes (this service, the IDE as `service_role`, the
+Supabase dashboard). It takes a short write lock on `public.users` while it runs. Without a direct database connection,
+apply it in the Supabase SQL editor with `deploy/supabase-identity-upgrade.sql` (it applies only the missing steps;
+`deploy/supabase-identity.sql` is for a project with no `identity` schema yet); undo it with
+`deploy/supabase-identity-rollback-0006.sql`. Products that read the feed must reconcile after an undo and reapply.
+After changing any migration, regenerate these files (their headers say how; a test fails when they drift).
+
+## User feed
+
+Products keep their own copy of a few user fields instead of reading `public.users`: the contract is in
+[CONTRACT.md](CONTRACT.md#user-feed). Change capture is the trigger of migration 0006, never application code, so the
+IDE's direct writes are included.
+
+To let a product read it:
+
+1. Register it in the developer portal (`/developer/services`) and have an administrator activate it; its backend
+   keeps the service secret, as for hand-off redemption.
+2. Add its id to `USER_FEED_SERVICES` in `deploy/.env` (`USER_FEED_SERVICES=lms`) and re-run `deploy/deploy.sh`.
+3. Its backend polls `GET /auth/service/user-events?after=<cursor>` every few seconds, looks up a user it has never
+   seen with `GET /auth/service/users/{id}`, and reconciles from `GET /auth/service/users` nightly and on a gap.
+
+What the product must verify on every document (CONTRACT.md has the details): `alg` RS256, `typ` exactly
+`user-feed+jwt`, a `kid` from this service's JWKS and a valid signature, `iss` the identity issuer, `aud` its own service
+id, `exp` not passed, `kind` the route's, and on a page `after` and `limit` equal to what it asked for (a document is
+valid for 300 seconds; the echo stops a replay as another request's answer). It applies a snapshot only when its `version` is higher than the one it holds,
+moves its cursor only to `next`, and reconciles when `after + 1 < oldest`. A feed document is never an access token:
+the access-token verifiers refuse it, and the feed verifier must refuse an access token.
+
+Disabling the service in the portal stops its feed on its next request; removing it from `USER_FEED_SERVICES` does once
+the service is re-deployed.
 
 ## Deploy
 
