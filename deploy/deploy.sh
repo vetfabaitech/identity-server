@@ -37,8 +37,12 @@ echo "==> Health"
 origin="$(grep -E '^PUBLIC_ORIGIN=' "$env_file" | cut -d= -f2-)"
 curl_opts=(--silent --show-error --fail --output /dev/null --write-out '%{http_code} %{url}\n')
 [[ "$mode" == "--local" ]] && curl_opts+=(--insecure)
+# The sign-in page is checked the way a product reaches it, with a `redirect`: the Caddyfile answers a bare
+# GET /auth/login (a direct visit) with 404.
+lms_origin="$(grep -E '^LMS_ORIGIN=' "$env_file" | cut -d= -f2-)"
+login="/auth/login?redirect=$(printf '%s/' "$lms_origin" | sed -e 's/%/%25/g' -e 's/:/%3A/g' -e 's#/#%2F#g')"
 # The first deploy for a hostname waits for Let's Encrypt (usually under a minute).
-for path in /auth/health /auth/.well-known/jwks.json /auth/login; do
+for path in /auth/health /auth/.well-known/jwks.json "$login"; do
   ok=""
   for _ in $(seq 1 24); do
     curl "${curl_opts[@]}" "$origin$path" 2>/dev/null && { ok=1; break; }
