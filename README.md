@@ -71,6 +71,8 @@ Sessions: the refresh token lives in an HttpOnly cookie on `Path=/auth`, is stor
 | `USER_FEED_SERVICES` | Empty (default: the user feed is off). Comma-separated registry service ids whose backends may read the [user feed](#user-feed); each must also be active |
 | `USER_FEED_RATE_LIMIT` | 1200: feed requests per service per 600 seconds before 429 with `Retry-After` |
 | `USER_EVENTS_RETENTION_DAYS` | 30 (at least 7): how long user events are kept before they are purged |
+| `ACCOUNT_STATUS_SERVICES` | Empty (default: off). Comma-separated registry service ids whose backends may [ask for an account to be approved, rejected or suspended](#account-status-changes-by-a-product); each must also be active. Separate from `USER_FEED_SERVICES`: reading users never implies changing them |
+| `ACCOUNT_STATUS_RATE_LIMIT` | 120: status-change requests per service per 600 seconds before 429 with `Retry-After` |
 
 ### OAuth callbacks to register
 
@@ -149,6 +151,34 @@ the access-token verifiers refuse it, and the feed verifier must refuse an acces
 
 Disabling the service in the portal stops its feed on its next request; removing it from `USER_FEED_SERVICES` does once
 the service is re-deployed.
+
+## Account status changes by a product
+
+Account status is this service's. An operator changes it with `identity-admin set-status EMAIL approved|rejected|suspended`
+on this host; a product's administrators can be given the same three actions from the product's own screen (the LMS's
+Admin › Accounts page) without a shell here. The product never writes `public.users`: its backend calls
+`POST /auth/service/users/{id}/status` with the administrator's user id, and the new status reaches every product
+through the user feed. Contract: [CONTRACT.md](CONTRACT.md#account-status).
+
+It is off until you allow a service:
+
+1. The service is registered and active in the developer portal (it already is if it reads the feed).
+2. Add its id to `ACCOUNT_STATUS_SERVICES` in `deploy/.env` (`ACCOUNT_STATUS_SERVICES=lms`) and re-run `deploy/deploy.sh`.
+   This is a separate decision from `USER_FEED_SERVICES`: it lets that product's administrators approve, reject and
+   suspend every non-administrator account, for all products.
+
+What the route guarantees whatever the product sends: only `approved`, `rejected` or `suspended`; unknown fields are
+refused; an administrator's account (`role = admin` or in `ADMIN_EMAILS`) is never changed; the acting person must be an
+approved account and not the account itself; `rejected` and `suspended` sign the account out exactly as the command does;
+a repeat is harmless; and every change is in `identity.audit` with the calling service and the acting person:
+
+```sql
+SELECT at, user_id, actor_id, metadata FROM identity.audit
+ WHERE action IN ('status_change', 'admin_denied') AND metadata->>'via' = 'service' ORDER BY id DESC LIMIT 20;
+```
+
+To switch it off again, remove the id from `ACCOUNT_STATUS_SERVICES` and re-deploy (or disable the service in the
+portal, which also stops its feed and hand-offs, at once).
 
 ## Deploy
 

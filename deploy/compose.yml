@@ -31,6 +31,9 @@ x-identity-env: &identity-env
   IDENTITY_USER_FEED_SERVICES: ${USER_FEED_SERVICES:-}
   IDENTITY_USER_FEED_RATE_LIMIT: ${USER_FEED_RATE_LIMIT:-1200}
   IDENTITY_USER_EVENTS_RETENTION_DAYS: ${USER_EVENTS_RETENTION_DAYS:-30}
+  # Account status changes by a product (CONTRACT.md, "Account status"): the services that may ask. Empty: off.
+  IDENTITY_ACCOUNT_STATUS_SERVICES: ${ACCOUNT_STATUS_SERVICES:-}
+  IDENTITY_ACCOUNT_STATUS_RATE_LIMIT: ${ACCOUNT_STATUS_RATE_LIMIT:-120}
   # false: a service that sends someone to sign in always gets the sign-in page; no silent single sign-on.
   IDENTITY_SILENT_SIGN_IN: ${SILENT_SIGN_IN:-false}
   IDENTITY_GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}

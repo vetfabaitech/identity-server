@@ -33,6 +33,8 @@ same filesystem, and never import a product's code.
   of email, name and status instead of reading `public.users`. Change capture is the `public.users` trigger of migration
   0006 (whoever writes, the IDE included), never application code; feed documents are `typ: user-feed+jwt` and must
   never pass for access tokens. After any migration, regenerate `deploy/supabase-identity*.sql` (a test fails on drift).
+  The one write there is `POST /auth/service/users/{id}/status` (`CONTRACT.md` "Account status"): its own permission
+  (`IDENTITY_ACCOUNT_STATUS_SERVICES`, off by default, never implied by the feed), never an administrator's account, audited.
 - `sdk/` is the client adapter for products: `python/` (token verification, FastAPI guard, hand-off destination),
   `js/` (browser client, hand-off client, React incl. `VetfabServiceSwitcher`), `example/` (a demo service, run twice for
   the hand-off). They implement `CONTRACT.md` plus the hand-off routes; guides in `docs/adapter.md`, `docs/sso-handoff.md`. Python tests run with the
