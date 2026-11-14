@@ -153,6 +153,15 @@ def test_user_feed_services_are_service_ids() -> None:
             make(user_feed_services=bad)
 
 
+def test_account_status_changes_are_off_by_default_and_apart_from_the_feed() -> None:
+    assert make(user_feed_services="lms").account_status_service_ids == frozenset()
+    settings = make(account_status_services=" lms ,lms")
+    assert settings.account_status_service_ids == frozenset({"lms"})
+    assert (settings.user_feed_service_ids, settings.account_status_rate_limit) == (frozenset(), 120)
+    with pytest.raises(ValidationError, match="IDENTITY_ACCOUNT_STATUS_SERVICES"):
+        make(account_status_services="LMS")
+
+
 def test_user_events_are_kept_at_least_seven_days() -> None:
     assert make(user_events_retention_days=7).user_events_retention_days == 7
     with pytest.raises(ValidationError):

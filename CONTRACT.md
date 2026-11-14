@@ -183,3 +183,58 @@ later change has a higher `seq`.
 A reconcile: read pages from no `after` until `next` is `null`, keeping the **first** page's `head`; apply every listed
 snapshot by the version rule; for each id you hold that no page listed, fetch it with (2) and apply that (it answers
 deleted, with its version); then read events from `after = <first page's head>`. Nothing is missed in between.
+
+## Account status
+
+`pending`, `approved`, `rejected` and `suspended` are this service's to change. A product that shows its
+administrators who is waiting (the LMS's Accounts page) may **ask** for a change on behalf of one of them; it never
+writes `public.users` or its own copy. The new status reaches every product the usual way: the [user feed](#user-feed)
+(a `user.updated` event) and, for the account itself, its next token.
+
+### `POST /auth/service/users/{id}/status`
+
+Access is as for the user feed (HTTP Basic `<service id>:<service secret>`, an **active** service, no CORS), under its
+own permission: the service must be listed in `IDENTITY_ACCOUNT_STATUS_SERVICES` (comma-separated service ids; empty,
+the default, switches this off). Being allowed the feed does not allow this. Requests are limited per service to
+`IDENTITY_ACCOUNT_STATUS_RATE_LIMIT` (default 120) per 600 seconds, counted apart from the feed.
+
+Request, `Content-Type: application/json`, at most 2048 bytes:
+
+```json
+{"status": "approved" | "rejected" | "suspended", "actor_id": "<uuid>", "reason": "<optional, at most 500 characters>"}
+```
+
+- `actor_id` is the user id of the product's administrator who asked. It must be an **approved** account here and not
+  the account being changed. Whether that person may administer accounts is the product's decision (its own
+  authorisation, before it calls); this service records who it was.
+- Any other field is refused: nothing else about an account (email, name, role, password) is taken from a product.
+  `pending` cannot be requested: resetting an account is an operator's `identity-admin set-status`.
+- An **administrator's account** (`role = admin`, or an email in `IDENTITY_ADMIN_EMAILS`) is never changed here.
+
+Answer, `200 application/json`, `Cache-Control: no-store`:
+
+```json
+{"user": {"id": "<uuid>", "status": "suspended"}, "previous_status": "approved", "changed": true, "sessions_revoked": 2}
+```
+
+`rejected` and `suspended` revoke every refresh session of the account, exactly as `identity-admin set-status` does
+(its access tokens run out within 15 minutes; products re-read status from their copy). **Idempotent:** repeating a
+request answers 200 with `changed: false`, writes no new feed event, and still revokes any session a non-active account
+somehow holds. Every change is written to `identity.audit` as `status_change` with `actor_id` and metadata
+`{"via": "service", "service": "<service id>", "from", "to", "reason"?, "sessions_revoked"}`; a refused request for an
+administrator's account is recorded as `admin_denied`.
+
+| Status | Body | When |
+|---|---|---|
+| 401 | `{"detail": {"code": "invalid_client"}}`, header `WWW-Authenticate: Basic realm="vetfab-identity"` | credentials missing, malformed or wrong, or no such service |
+| 403 | `{"detail": {"code": "account_status_not_allowed"}}` | valid credentials, but the service is pending or disabled, or not in `IDENTITY_ACCOUNT_STATUS_SERVICES` |
+| 403 | `{"detail": {"code": "actor_not_allowed"}}` | `actor_id` is not an approved account |
+| 403 | `{"detail": {"code": "admin_account"}}` | the account is an administrator's |
+| 404 | `{"detail": {"code": "user_not_found"}}` | no account with that id |
+| 409 | `{"detail": {"code": "own_account"}}` | `actor_id` is the account being changed |
+| 422 | `{"detail": {"code": "invalid_request", "field": "<name>"}}` | `id`, `status`, `actor_id`, `reason`, an unknown field (named), `content-type`, or `body` (not a JSON object, or too large) |
+| 429 | `{"detail": {"code": "too_many_requests"}}`, header `Retry-After: <seconds>` | over the per-service limit |
+| 503 | `{"detail": {"code": "busy"}}`, header `Retry-After: 2` | the database cannot take the request now |
+
+Because it is idempotent, a request whose answer was lost (a timeout, a 5xx) can simply be sent again.
+
