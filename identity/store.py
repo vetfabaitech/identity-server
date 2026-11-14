@@ -85,6 +85,13 @@ async def get_user(conn: AsyncConnection[Any], user_id: UUID) -> User | None:
     return _user(row) if row else None
 
 
+async def lock_user(conn: AsyncConnection[Any], user_id: UUID) -> User | None:
+    """The user, with its row locked until the caller's transaction ends (read, decide, then write)."""
+    cur = await conn.execute(f"SELECT {_USER_COLUMNS} FROM public.users WHERE id = %s FOR UPDATE", (user_id,))  # noqa: S608
+    row = await cur.fetchone()
+    return _user(row) if row else None
+
+
 async def list_users_by_emails(conn: AsyncConnection[Any], emails: list[str]) -> list[User]:
     wanted = [normalise_email(e) for e in emails]
     cur = await conn.execute(
